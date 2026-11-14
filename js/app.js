@@ -44,6 +44,7 @@ function commit() {
   hist.undo.push(hist.last); if (hist.undo.length > 100) hist.undo.shift();
   hist.redo = []; hist.last = snapshot();
   save(); refresh();
+  if (typeof V3D !== 'undefined') V3D.changed();
 }
 function restore(h) {
   const o = JSON.parse(h.s); project.roads = o.roads; project.image = o.image;
@@ -55,6 +56,7 @@ function restore(h) {
   if (ui.sel && ui.sel.type === 'road' && !roadById(ui.sel.id)) ui.sel = null;
   if (ui.sel && ui.sel.type === 'road' && ui.sel.ip != null && ui.sel.ip >= roadById(ui.sel.id).ips.length) ui.sel.ip = null;
   ui.profiles.clear(); save(); syncImageLayer(); refresh();
+  if (typeof V3D !== 'undefined') V3D.changed();
 }
 function undo() { if (!hist.undo.length) return; hist.redo.push(hist.last); hist.last = hist.undo.pop(); restore(hist.last); }
 function redo() { if (!hist.redo.length) return; hist.undo.push(hist.last); hist.last = hist.redo.pop(); restore(hist.last); }
