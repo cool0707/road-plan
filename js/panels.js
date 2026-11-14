@@ -340,6 +340,7 @@ function act(a, el) {
     case 'new': if (confirm('現在のプロジェクトを破棄して新規作成しますか？（必要なら先に書き出してください）')) { const keep = { base: project.base, googleKey: project.googleKey, view: project.view }; project = Object.assign(newProject(), keep); ui.sel = null; ui.imageUrl = null; idb.set('image', null).catch(() => {}); resetAll(); } return;
     case 'open': return $('#fileOpen').click();
     case 'menu-export': $('#exportMenu').hidden = !$('#exportMenu').hidden; return;
+    case 'export-pdf': return exportPDF();
     case 'export-json': return download(project.name + '.json', JSON.stringify(Object.assign({}, project, { imageData: ui.imageUrl || null }), null, 1), 'application/json');
     case 'export-geojson': return download(project.name + '.geojson', JSON.stringify(toGeoJSON(), null, 1), 'application/geo+json');
     case 'export-csv': return download(project.name + '_線形計算書.csv', '﻿' + toCSV(), 'text/csv');
@@ -448,6 +449,7 @@ function showHelp() {
       <li>位置指定道路（建築基準法施行令 第144条の4）: 幅員 4m・袋路 35m・隅切り・勾配 12%。</li>
       <li>結果は簡易照査です。最終判断は条文・道路管理者の基準で行ってください。</li></ul>
     <h4>データ</h4><ul>
+      <li>書き出し ▾ → PDF: 平面図（標準縮尺・背景地図つき）と線形計算書・照査結果を印刷ダイアログ経由で PDF 保存。</li>
       <li>背景: 地理院タイル / OpenStreetMap / Google（Map Tiles API キーが必要）/ 任意の画像。</li>
       <li>既存道路: OpenStreetMap（Overpass API）または国土地理院ベクトルタイル提供実験（道路中心線）。</li>
       <li>データはこのブラウザ内（localStorage / IndexedDB）にのみ保存されます。座標は最初の作図位置を原点としたローカル平面座標（X=東, Y=北, m）。</li></ul>

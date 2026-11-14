@@ -11,7 +11,7 @@
 - **照査**: 道路構造令（設計速度・幅員・最小曲線半径・曲線長・片勾配・緩和区間・視距・縦断勾配・交差角）、進入速度と減速距離、位置指定道路（建築基準法施行令 第144条の4）
 - **現況縦断**: 地理院標高タイルから中心線沿いの地盤高・勾配を取得
 - **下絵画像**: 図面や地図画像を移動・回転・拡縮して重ね、2 点間の実距離で縮尺合わせ
-- **書き出し**: プロジェクト JSON / GeoJSON / 線形計算書 CSV / DXF
+- **書き出し**: PDF（平面図＋線形計算書＋照査結果）/ プロジェクト JSON / GeoJSON / 線形計算書 CSV / DXF
 
 ## 使い方
 
@@ -33,4 +33,4 @@ Google マップを背景にするには Google Maps Platform の **Map Tiles AP
 node --test test/geom.test.js
 ```
 
-構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `vendor/leaflet`（Leaflet 1.9.4）
+構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `js/report.js`（PDF 用レポート）, `vendor/leaflet`（Leaflet 1.9.4）
