@@ -20,8 +20,18 @@ function newProject() {
     defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false, snow: '', bike: false },
   };
 }
+/* 既存道路の頂点を [lat, lng] 配列にそろえる（旧版で {lat, lng} が混ざった保存データの修復） */
+function normalizeExisting(p) {
+  if (!p || !Array.isArray(p.existing)) return p;
+  p.existing = p.existing.map((e) => {
+    if (!e.pts.some((q) => !Array.isArray(q))) return e;
+    const pts = e.pts.map((q) => (Array.isArray(q) ? q : [q.lat, q.lng]));
+    return Object.assign({}, e, { pts, bbox: bboxOf(pts) });
+  });
+  return p;
+}
 function loadProject() {
-  try { const p = JSON.parse(localStorage.getItem(LS_KEY)); if (p && p.version === 1) return Object.assign(newProject(), p); } catch (e) { /* 壊れた保存データは無視 */ }
+  try { const p = JSON.parse(localStorage.getItem(LS_KEY)); if (p && p.version === 1) return Object.assign(newProject(), normalizeExisting(p)); } catch (e) { /* 壊れた保存データは無視 */ }
   return null;
 }
 let project = loadProject() || newProject();
@@ -404,7 +414,7 @@ function healExisting(tol) {
 /* 既存道路 ex の線分 si の位置 w に頂点を挿入した新しい要素（頂点上なら挿入しない） */
 function exInsert(ex, si, w, ll) {
   if (w <= 1e-6 || w >= 1 - 1e-6) return ex;
-  const pts = ex.pts.slice(); pts.splice(si + 1, 0, ll);
+  const pts = ex.pts.slice(); pts.splice(si + 1, 0, Array.isArray(ll) ? [ll[0], ll[1]] : [ll.lat, ll.lng]);
   return Object.assign({}, ex, { pts, bbox: bboxOf(pts) });
 }
 const dupMsg = (r) => (r.skipped ? `（重複 ${r.skipped} 本は除外）` : '');

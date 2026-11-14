@@ -642,7 +642,7 @@ function openProjectFile(file) {
       if (!p || p.version !== 1 || !Array.isArray(p.roads)) throw new Error('形式が違います');
       ui.imageUrl = p.imageData || null; delete p.imageData;
       idb.set('image', ui.imageUrl).catch(() => {});
-      project = Object.assign(newProject(), p, { googleKey: project.googleKey }); ui.sel = null;
+      project = Object.assign(newProject(), normalizeExisting(p), { googleKey: project.googleKey }); ui.sel = null;
       if (project.view) map.setView([project.view.lat, project.view.lng], project.view.zoom);
       resetAll(); toast('プロジェクトを開きました');
     } catch (err) { toast('読み込めませんでした: ' + err.message, 'err'); }
