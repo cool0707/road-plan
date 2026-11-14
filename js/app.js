@@ -79,6 +79,7 @@ const gExisting = L.layerGroup().addTo(map), gRoads = L.layerGroup().addTo(map),
 
 const GSI_ATTR = '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
 const BASES = {
+  'gsi-vector': { name: '地理院ベクトル（Google 風）', vector: true },
   'gsi-pale': { name: '地理院地図（淡色）', url: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', maxNativeZoom: 18, attr: GSI_ATTR },
   'gsi-std': { name: '地理院地図（標準）', url: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', maxNativeZoom: 18, attr: GSI_ATTR },
   'gsi-photo': { name: '地理院 航空写真', url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', maxNativeZoom: 18, attr: GSI_ATTR },
@@ -88,9 +89,39 @@ const BASES = {
   none: { name: 'なし（白地）' },
 };
 let baseLayer = null;
+const loadScript = (src) => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error(src + ' を読み込めません')); document.head.appendChild(s); });
+let mapLibreReady = null;
+function loadMapLibre() { // ベクトル背景を選んだときだけ MapLibre GL を読み込む
+  if (!mapLibreReady) {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'vendor/maplibre/maplibre-gl.css'; document.head.appendChild(css);
+    mapLibreReady = loadScript('vendor/maplibre/maplibre-gl.js').then(() => loadScript('vendor/maplibre/leaflet-maplibre-gl.js')).then(() => loadScript('js/vectorstyle.js'))
+      .catch((e) => { mapLibreReady = null; throw e; });
+  }
+  return mapLibreReady;
+}
+async function vectorBaseLayer() {
+  await loadMapLibre();
+  const cv = document.createElement('canvas');
+  if (!cv.getContext('webgl2') && !cv.getContext('webgl')) throw new Error('このブラウザは WebGL に対応していません');
+  const layer = L.maplibreGL({
+    style: gsiGoogleStyle(), localIdeographFontFamily: '"Hiragino Sans", "Yu Gothic UI", "Meiryo", "Noto Sans JP", sans-serif',
+    printUrl: BASES['gsi-pale'].url, maxNativeZoom: 18, // PDF の背景はラスタ（淡色）で代用
+  });
+  layer.setOpacity = function (o) { if (this._container) this._container.style.opacity = o; this._opacity = o; return this; };
+  layer.on('add', function () { this.setOpacity(this._opacity ?? 1); });
+  return layer;
+}
 async function setBase(key) {
   const b = BASES[key] || BASES['gsi-pale'];
   let url = b.url, attr = b.attr, maxNative = b.maxNativeZoom;
+  if (b.vector) {
+    let layer;
+    try { layer = await vectorBaseLayer(); } catch (e) { toast('ベクトル地図を表示できません: ' + e.message, 'err'); return false; }
+    if (baseLayer) map.removeLayer(baseLayer);
+    baseLayer = layer.setOpacity(project.baseOpacity).addTo(map);
+    project.base = key;
+    return true;
+  }
   if (b.google) {
     // Google Map Tiles API（公式のタイルAPI）。APIキーが必要。
     if (!project.googleKey) { toast('Google マップを使うには左パネルで Map Tiles API のキーを設定してください', 'err'); return false; }
