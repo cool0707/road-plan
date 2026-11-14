@@ -20,14 +20,17 @@ function newProject() {
     defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false, snow: '', bike: false },
   };
 }
-/* 既存道路の頂点を [lat, lng] 配列にそろえる（旧版で {lat, lng} が混ざった保存データの修復） */
+/* 既存道路の頂点を [lat, lng] 配列にそろえる（旧版で {lat, lng} や座標の欠けた頂点が混ざった保存データの修復）
+ * 数値でない頂点は捨て、2 点未満になった道路は除き、範囲 bbox は数値でなければ計算し直す */
 function normalizeExisting(p) {
   if (!p || !Array.isArray(p.existing)) return p;
-  p.existing = p.existing.map((e) => {
-    if (!e.pts.some((q) => !Array.isArray(q))) return e;
-    const pts = e.pts.map((q) => (Array.isArray(q) ? q : [q.lat, q.lng]));
+  const ok = (q) => Array.isArray(q) && q.length >= 2 && Number.isFinite(q[0]) && Number.isFinite(q[1]);
+  p.existing = p.existing.filter((e) => e && Array.isArray(e.pts)).map((e) => {
+    const fine = e.pts.every(ok), bbOk = Array.isArray(e.bbox) && e.bbox.length === 4 && e.bbox.every(Number.isFinite);
+    if (fine && bbOk) return e;
+    const pts = fine ? e.pts : e.pts.map((q) => (Array.isArray(q) ? q : q && typeof q === 'object' ? [q.lat, q.lng] : null)).filter(ok);
     return Object.assign({}, e, { pts, bbox: bboxOf(pts) });
-  });
+  }).filter((e) => e.pts.length >= 2);
   return p;
 }
 function loadProject() {
@@ -917,7 +920,7 @@ function renderExEnds() {
       const moved = Object.assign({}, ex, { pts, bbox: bboxOf(pts) }), upd = new Map([[ex.id, moved]]);
       if (sn && !sn.isEnd) upd.set(sn.ex.id, exInsertNear(sn.ex, sn.latlng));
       project.existing = project.existing.map((e) => upd.get(e.id) || e);
-      const at = ui.sel.at || pts[idx];
+      const at = (ui.sel && ui.sel.at) || pts[idx];
       ui.sel = Object.assign({ type: 'existing', id: ex.id, at }, existingPiece(moved, at));
       commitEx();
     });
