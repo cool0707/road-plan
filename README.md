@@ -1,6 +1,8 @@
 # Road Plan — 道路計画デザインツール
 
 地図（地理院タイル / OpenStreetMap / Google / 任意の画像）に重ねて道路の平面線形を描く、ブラウザだけで動くアプリです。
+**▶ [アプリを開く（GitHub Pages）](https://cool0707.github.io/road-plan/)**
+
 サーバー・ビルド不要。`index.html` をブラウザで開くだけで動きます（データはブラウザ内にのみ保存）。
 
 ## 主な機能
@@ -15,7 +17,7 @@
 
 ## 使い方
 
-1. `index.html` を開く（または任意の静的サーバーで配信）
+1. [GitHub Pages 版](https://cool0707.github.io/road-plan/) を開く（ローカルでは `index.html` を直接開くか、任意の静的サーバーで配信）
 2. 左パネル「OSM から取得」で表示範囲の既存道路を読み込む
 3. `P` で道路を描く → 既存道路上をクリックして接続 → ダブルクリックで確定
 4. IP を選択して右パネルで R・A を調整、「照査」タブで適合を確認
@@ -28,6 +30,8 @@ Google マップを背景にするには Google Maps Platform の **Map Tiles AP
 条例・道路管理者基準・特例値の適用条件は別途確認してください。座標は最初の作図位置を原点とするローカル平面座標（m）です。
 
 ## 開発
+
+`main` へ push すると GitHub Actions（`.github/workflows/pages.yml`）がテスト後に GitHub Pages へ自動デプロイします。
 
 ```
 node --test test/geom.test.js
