@@ -173,3 +173,73 @@ test('既存道路の途切れ修復: つながっている線・遠い線・並
   const ops = G.healGaps(lines, { tol: 8 });
   assert.deepStrictEqual(ops.filter((o) => !o.insert).map((o) => o.li + ':' + o.end), []);
 });
+
+test('勾配の上限: 区分・地域・自転車道の有無で切り替わる', () => {
+  // 最大片勾配（16条）
+  near(Rules.emaxOf({ cls: '1-2', V: 100 }), 0.10, 1e-12);
+  near(Rules.emaxOf({ cls: '2-1', V: 80, snow: 'cold' }), 0.08, 1e-12);
+  near(Rules.emaxOf({ cls: '2-1', V: 80, snow: 'severe' }), 0.06, 1e-12);
+  near(Rules.emaxOf({ cls: '3-2', V: 60 }), 0.06, 1e-12, '自転車道等のない第3種');
+  near(Rules.emaxOf({ cls: '3-2', V: 60, bike: true }), 0.10, 1e-12);
+  near(Rules.emaxOf({ cls: '3-2', V: 60, bike: true, snow: 'cold' }), 0.08, 1e-12);
+  near(Rules.emaxOf({ cls: '4-1', V: 60, bike: true }), 0.06, 1e-12);
+  // 縦断勾配（20条）: 特例値は 第1〜3種 +3%、第4種 +2%
+  assert.deepStrictEqual(Rules.gradeLimit({ cls: '3-3', V: 40 }), { std: 7, ex: 10 });
+  assert.deepStrictEqual(Rules.gradeLimit({ cls: '4-2', V: 40 }), { std: 7, ex: 9 });
+  assert.deepStrictEqual(Rules.gradeLimit({ cls: '4-4', V: 20 }), { std: 9, ex: 11 });
+  assert.deepStrictEqual(Rules.gradeLimit({ cls: '3-5', V: 20, shitei: true }), { std: 9, ex: 12 });
+  // 合成勾配（25条）
+  assert.deepStrictEqual(Rules.combLimit({ cls: '3-3', V: 40 }), { std: 11.5, ex: 11.5 });
+  assert.deepStrictEqual(Rules.combLimit({ cls: '3-5', V: 20 }), { std: 11.5, ex: 12.5 });
+  assert.strictEqual(Rules.combLimit({ cls: '3-3', V: 40, snow: 'severe' }).ex, 8);
+});
+
+test('縦断照査: 第4種の特例値・直線部の合成勾配・登坂車線・歩道・のり面', () => {
+  const base = { lanes: 2, laneW: 3, shoulderW: 0.75, sidewalkW: 0, ips: [{ x: 0, y: 0 }, { x: 300, y: 0 }], conn: { start: null, end: null } };
+  const al = G.computeAlignment(base.ips);
+  const run = (road, vips, more) => Rules.check(road, al, { vplan: Object.assign({ pf: G.computeProfile(vips, al.length), ends: {}, comb: [] }, more) });
+  const has = (res, level, cat, re) => res.some((r) => r.level === level && r.cat === cat && (!re || re.test(r.title)));
+  const g95 = [{ s: 0, z: 0 }, { s: 300, z: 28.5 }]; // 9.5%
+  assert.ok(has(run({ ...base, cls: '3-3', V: 40 }, g95), 'warn', '縦断勾配'), '第3種 40km/h: 特例 10% 以内');
+  assert.ok(has(run({ ...base, cls: '4-2', V: 40 }, g95), 'error', '縦断勾配'), '第4種 40km/h: 特例 9% 超');
+  // 直線部の合成勾配: 12% と横断勾配 2% → 12.17%
+  const g12 = [{ s: 0, z: 0 }, { s: 300, z: 36 }];
+  const r20 = run({ ...base, cls: '3-5', V: 20, lanes: 1, laneW: 4, shoulderW: 0.5 }, g12);
+  assert.ok(has(r20, 'warn', '合成勾配', /直線部/), '20km/h は 11.5% 超 12.5% 以下が特例');
+  assert.ok(has(run({ ...base, cls: '3-3', V: 40, snow: 'severe' }, [{ s: 0, z: 0 }, { s: 300, z: 24.6 }]), 'error', '合成勾配', /直線部/), '積雪寒冷の度がはなはだしい地域は 8%');
+  assert.ok(has(run({ ...base, cls: '3-3', V: 40 }, [{ s: 0, z: 0 }, { s: 300, z: 15 }]), 'ok', '合成勾配', /直線部/));
+  // 登坂車線（5% 超）と歩道（5% 超・8% 超）
+  const g6 = [{ s: 0, z: 0 }, { s: 300, z: 18 }];
+  assert.ok(has(run({ ...base, cls: '3-3', V: 40 }, g6), 'info', '登坂車線'));
+  assert.ok(!has(run({ ...base, cls: '3-3', V: 40 }, [{ s: 0, z: 0 }, { s: 300, z: 12 }]), 'info', '登坂車線'));
+  assert.ok(has(run({ ...base, cls: '3-3', V: 40, sidewalkW: 2 }, g6), 'info', '歩道'));
+  assert.ok(has(run({ ...base, cls: '3-3', V: 40, sidewalkW: 2 }, g95), 'warn', '歩道'));
+  assert.ok(!has(run({ ...base, cls: '3-3', V: 40 }, g95), 'warn', '歩道'), '歩道がなければ対象外');
+  // のり面
+  const slope = run({ ...base, cls: '3-3', V: 40 }, g6, { fill: { d: 6.2, s: 100 }, cut: { d: 12, s: 200 } });
+  assert.ok(has(slope, 'info', 'のり面勾配', /盛土/) && has(slope, 'warn', 'のり面勾配', /切土/));
+  // 交差点取付部（交差接続の端で 2.5% 超）
+  const conn = { start: { mode: 'cross', bearing: Math.PI / 2 }, end: null };
+  assert.ok(run({ ...base, cls: '3-3', V: 40, conn }, g6).some((r) => /交差点取付部/.test(r.title)));
+});
+
+test('片勾配の照査: 上限・逆片勾配・片勾配を付さない半径・すりつけ長', () => {
+  const mk = (o, ip) => ({ cls: '3-2', V: 60, lanes: 2, laneW: 3.25, shoulderW: 0.75, sidewalkW: 0, conn: { start: null, end: null }, ...o, ips: [{ x: 0, y: 0 }, { x: 400, y: 0, R: 200, A1: 100, A2: 100, ...ip }, { x: 700, y: 300 }] });
+  const run = (road) => Rules.check(road, G.computeAlignment(road.ips), {});
+  const has = (res, level, cat, re) => res.some((r) => r.level === level && r.cat === cat && (!re || re.test(r.title)));
+  assert.ok(has(run(mk({}, { e: 8 })), 'error', '片勾配', /最大片勾配を超過/), '自転車道等のない第3種は 6%');
+  assert.ok(has(run(mk({ bike: true }, { e: 8 })), 'ok', '片勾配'), '自転車道等があれば 10%');
+  assert.ok(has(run(mk({ bike: true, snow: 'severe' }, { e: 8 })), 'error', '片勾配'));
+  assert.ok(has(run(mk({}, { e: -2 })), 'error', '片勾配', /逆片勾配/), 'R=200 で逆片勾配');
+  assert.ok(has(run(mk({ cls: '4-1' }, { e: -2 })), 'warn', '片勾配', /逆片勾配/), '第4種は要確認');
+  assert.ok(has(run(mk({}, { e: 1 })), 'warn', '横断勾配'), '1.5% 未満は排水に支障');
+  // 片勾配を付さない曲線半径（60km/h: 2000m）以上は自動で拝み勾配のまま
+  const big = mk({}, { R: 2500, A1: 0, A2: 0 });
+  assert.strictEqual(Rules.superelevation(big, 1, 2500).crown, true);
+  assert.strictEqual(Rules.superelevation(big, 1, 1500).crown, false);
+  assert.ok(has(run(big), 'info', '片勾配', /片勾配なし/));
+  // すりつけ長: B=3.25m, e=6%+2%, 1/125 → 32.5m。緩和曲線 50m は足りる。4 車線（B=6.5m → 65m）は不足
+  near(Rules.runoffLength(mk({}), 0.06), 32.5, 1e-9);
+  assert.ok(has(run(mk({}, { e: 6 })), 'ok', '片勾配すりつけ'));
+  assert.ok(has(run(mk({ lanes: 4 }, { e: 6 })), 'warn', '片勾配すりつけ'));
+});

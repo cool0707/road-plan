@@ -5,7 +5,7 @@
   'use strict';
   const Geom = root.Geom || (typeof require !== 'undefined' ? require('./geom.js') : null);
   const Rules = root.Rules || (typeof require !== 'undefined' ? require('./rules.js') : null);
-  const SLOPE_MAX = 30, SLOPE_FADE = 15, FILL = 1.5, CUT = 1.0, BRIDGE_H = 8, DECK = 1.6;
+  const SLOPE_MAX = 30, SLOPE_FADE = 15, FILL = Rules.FILL_SLOPE, CUT = Rules.CUT_SLOPE, BRIDGE_H = 8, DECK = 1.6;
 
   /* 計画道路の中心線上の点（測点）。要素の境目も入れる */
   function stationsOf(al) {
@@ -42,7 +42,7 @@
       let inner = -0.02, outer = -0.02;
       if (c && Math.abs(r.k) > 1e-9) {
         const se = Rules.superelevation(road, c.ip, c.R), e = se.e, t = Math.min(1, Math.abs(r.k) * c.R);
-        if (se.set || e > 0.02) { inner = -(0.02 + (e - 0.02) * t); outer = -0.02 + (e + 0.02) * t; }
+        if (!se.crown) { inner = -(0.02 + (e - 0.02) * t); outer = -0.02 + (e + 0.02) * t; }
       }
       r.slope = r.k > 0 ? [inner, outer] : [outer, inner]; // [左, 右]: 外向きの勾配
     });
@@ -92,7 +92,7 @@
         if (u <= 1e-6) { p.z = top; p.kind = Math.abs(d) > M.W ? 'walk' : 'road'; p.ref = { m: mi, s: r.s, d }; continue; }
         const w = u <= SLOPE_MAX ? 1 : Math.max(0, 1 - (u - SLOPE_MAX) / SLOPE_FADE);
         if (p.z < top) { const f = p.z + (top - u / FILL - p.z) * w; if (f > p.z + 1e-6) { p.z = f; p.kind = 'fill'; p.ref = { m: mi, s: r.s, d }; } }
-        else { const c = p.z + (top + u * CUT - p.z) * w; if (c < p.z - 1e-6) { p.z = c; p.kind = 'cut'; p.ref = { m: mi, s: r.s, d }; } }
+        else { const c = p.z + (top + u / CUT - p.z) * w; if (c < p.z - 1e-6) { p.z = c; p.kind = 'cut'; p.ref = { m: mi, s: r.s, d }; } }
       }
     }
     return pts;
