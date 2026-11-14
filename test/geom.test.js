@@ -122,3 +122,16 @@ test('縦断照査: 勾配・縦断曲線の規定', () => {
   const smallR = run([{ s: 0, z: 0 }, { s: 150, z: 10, VCL: 35 }, { s: 300, z: 0 }]); // Δg=13.3% → R=262 < 450
   assert.ok(smallR.some((r) => r.level === 'error' && r.cat === '縦断曲線' && /R=/.test(r.title)));
 });
+
+test('片勾配: IP に設定した値を使い、未設定なら必要片勾配から自動', () => {
+  const road = { cls: '3-2', V: 60, lanes: 2, laneW: 3.25, shoulderW: 0.75, sidewalkW: 0, ips: [{ x: 0, y: 0 }, { x: 100, y: 0, R: 200 }, { x: 200, y: 100 }] };
+  const auto = Rules.superelevation(road, 1, 200);
+  assert.strictEqual(auto.set, false);
+  near(auto.e, Rules.curveSpeed(road, 200).e, 1e-12);
+  road.ips[1].e = 4;
+  const set = Rules.superelevation(road, 1, 200);
+  assert.strictEqual(set.set, true);
+  near(set.e, 0.04, 1e-12);
+  near(set.vSafe, Math.sqrt(127 * 200 * (0.04 + Rules.T[60].f)), 1e-9);
+  assert.ok(set.vSafe < auto.vSafe + 1e-9 || auto.e <= 0.04);
+});

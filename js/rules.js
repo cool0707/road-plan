@@ -56,6 +56,15 @@
     return { need, e, vSafe: Math.sqrt(127 * R * (e + t.f)), vMax: Math.sqrt(127 * R * (emax + t.f)) };
   }
 
+  /* IP i の曲線に付ける片勾配。IP に設定値 e [%] があればその値、なければ必要片勾配から自動（2%〜最大片勾配）。
+   * 戻り値 { e（小数）, set（設定値か）, need, vSafe（その片勾配での走行可能速度）, vMax } */
+  function superelevation(road, i, R) {
+    const sp = curveSpeed(road, R), ip = road.ips && road.ips[i], t = T[road.V];
+    if (!ip || ip.e == null || !isFinite(ip.e)) return { e: sp.e, set: false, need: sp.need, vSafe: sp.vSafe, vMax: sp.vMax };
+    const e = ip.e / 100;
+    return { e, set: true, need: sp.need, vSafe: Math.sqrt(Math.max(0, 127 * R * (e + t.f))), vMax: sp.vMax };
+  }
+
   function foldAngle(a) { // 2直線のなす角 0〜90°
     a = Math.abs(a) % Math.PI;
     return deg(a > Math.PI / 2 ? Math.PI - a : a);
@@ -125,8 +134,13 @@
       if (R < 6) add('error', '曲線半径', `${nm}: 小型自動車も回転不可`, '小型自動車の最小回転半径 6m 未満', '道路構造令 第4条', ip);
       else if (R < 12) add('warn', '曲線半径', `${nm}: 普通自動車の最小回転半径未満`, '普通自動車・セミトレーラ連結車の最小回転半径は 12m', '道路構造令 第4条', ip);
       // 片勾配・走行速度
-      const sp = curveSpeed(road, R);
-      if (sp.need > emax + 1e-9) add('error', '片勾配', `${nm}: 必要片勾配 ${f1(sp.need * 100)}% が上限超過`, `最大片勾配 ${emax * 100}%（f=${t.f}）での走行可能速度は約 ${Math.floor(sp.vMax)}km/h`, '道路構造令 第16条', ip);
+      const sp = curveSpeed(road, R), se = superelevation(road, ip, R);
+      if (se.set) {
+        const d = `設定値 ${f1(se.e * 100)}%（必要片勾配 i = V²/(127R) − f = ${f1(Math.max(0, sp.need) * 100)}%, f=${t.f}）`;
+        if (se.e > emax + 1e-9) add('error', '片勾配', `${nm}: 片勾配 ${f1(se.e * 100)}% が最大片勾配を超過`, `${d}。最大 ${emax * 100}%`, '道路構造令 第16条', ip);
+        else if (se.e < sp.need - 5e-4) add('warn', '片勾配', `${nm}: 片勾配 ${f1(se.e * 100)}% は必要片勾配に不足`, `${d}。この片勾配での走行可能速度は約 ${Math.floor(se.vSafe)}km/h`, '道路構造令 第16条', ip);
+        else add('ok', '片勾配', `${nm}: 片勾配 ${f1(se.e * 100)}%`, d, '道路構造令 第16条', ip);
+      } else if (sp.need > emax + 1e-9) add('error', '片勾配', `${nm}: 必要片勾配 ${f1(sp.need * 100)}% が上限超過`, `最大片勾配 ${emax * 100}%（f=${t.f}）での走行可能速度は約 ${Math.floor(sp.vMax)}km/h`, '道路構造令 第16条', ip);
       else add('info', '片勾配', `${nm}: 必要片勾配 約${f1(Math.max(0, sp.need) * 100)}%`, `i = V²/(127R) − f（f=${t.f}）。最大 ${emax * 100}%${road.cls[0] === '4' ? '（第4種は片勾配を付さないことができる）' : ''}`, '道路構造令 第16条', ip);
       // 曲線長
       const need = th < 7 ? Math.max(t.clK / Math.max(th, 2), t.clMin) : t.clMin;
@@ -269,7 +283,7 @@
     return out;
   }
 
-  const Rules = { T, SPEEDS, CLASSES, check, curveSpeed, recommend, recommendL, emaxOf, carriage, totalWidth, foldAngle };
+  const Rules = { T, SPEEDS, CLASSES, check, curveSpeed, superelevation, recommend, recommendL, emaxOf, carriage, totalWidth, foldAngle };
   if (typeof module !== 'undefined' && module.exports) module.exports = Rules;
   else root.Rules = Rules;
 })(typeof self !== 'undefined' ? self : this);

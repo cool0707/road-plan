@@ -267,7 +267,8 @@ function ipBlock(road, al) {
       <div class="row">${num('A1', 'ip.A1', ip.A1, { step: 1, dec: 1, title: '起点側クロソイドパラメータ（A² = R·L）' })}${num('L1', 'ip.L1', ip.R > 0 ? (ip.A1 * ip.A1) / ip.R : 0, { unit: 'm', step: 1, dec: 2, title: `起点側クロソイド長（緩和区間長 ${t.Ls}m 以上）` })}</div>
       <div class="row">${num('A2', 'ip.A2', ip.A2, { step: 1, dec: 1, title: '終点側クロソイドパラメータ' })}${num('L2', 'ip.L2', ip.R > 0 ? (ip.A2 * ip.A2) / ip.R : 0, { unit: 'm', step: 1, dec: 2, title: '終点側クロソイド長' })}</div>`;
     if (!c.none) {
-      const sp = Rules.curveSpeed(road, c.R);
+      const sp = Rules.curveSpeed(road, c.R), se = Rules.superelevation(road, i, c.R);
+      h += `<div class="row"><label class="fld" title="この曲線の片勾配（円曲線部の値。緩和曲線で直線部の横断勾配 2% からすりつけ）。空欄にすると必要片勾配から自動（2%〜最大片勾配）。3D ビューの路面・照査・合成勾配に使います"><span class="lb">片勾配</span><input data-key="ip.e" data-step="0.5" data-dec="1" value="${ip.e != null ? fmt(ip.e, 1) : ''}" placeholder="自動 ${fmt(sp.e * 100, 1)}" inputmode="decimal"><span class="un">%</span></label>${num('走行可能', '', Math.floor(se.vSafe), { ro: true, unit: 'km/h', dec: 0, title: 'この片勾配で走行できる速度 √(127R(i+f))' })}</div>`;
       h += kv([['接線長 TL1 / TL2', `${fmt(c.T1)} / ${fmt(c.T2)} m`], ['円曲線長 Lc', `${fmt(c.Lc)} m`], ['曲線長 CL（緩和含む）', `${fmt(c.CL)} m`],
         ['移程量 ΔR1 / ΔR2', `${fmt(c.p1, 3)} / ${fmt(c.p2, 3)} m`], ['接線角 τ1 / τ2', `${fmt(deg(c.tau1), 2)}° / ${fmt(deg(c.tau2), 2)}°`],
         ['必要片勾配', `${fmt(Math.max(0, sp.need) * 100, 1)} %`], ['走行可能速度（最大片勾配時）', `約 ${Math.floor(sp.vMax)} km/h`]]);
@@ -368,6 +369,7 @@ function setValue(key, raw, live) {
     case 'ip.R': set(ip, 'R', pos(v)); break;
     case 'ip.A1': set(ip, 'A1', pos(v)); break;
     case 'ip.A2': set(ip, 'A2', pos(v)); break;
+    case 'ip.e': if (raw.trim() === '' || !isFinite(v)) delete ip.e; else ip.e = Math.max(-6, Math.min(12, v)); break;
     case 'ip.L1': if (isFinite(v) && ip.R > 0) ip.A1 = Math.sqrt(ip.R * Math.max(0, v)); break;
     case 'ip.L2': if (isFinite(v) && ip.R > 0) ip.A2 = Math.sqrt(ip.R * Math.max(0, v)); break;
     case 'conn.start.mode': road.conn.start.mode = raw; break;
@@ -622,7 +624,7 @@ function toGeoJSON() {
     feats.push({ type: 'Feature', properties: { ...base, kind: 'centerline', length: +al.length.toFixed(3), width: Rules.totalWidth(r) }, geometry: { type: 'LineString', coordinates: al.samples.map(c3) } });
     if (al.samples.length > 1) feats.push({ type: 'Feature', properties: { ...base, kind: 'area' }, geometry: { type: 'Polygon', coordinates: [[...off(hw), ...off(-hw).reverse(), off(hw)[0]]] } });
     al.points.forEach((pt) => feats.push({ type: 'Feature', properties: { ...base, kind: 'point', name: pt.name, station: +pt.s.toFixed(3) }, geometry: { type: 'Point', coordinates: c(pt) } }));
-    r.ips.forEach((ip, i) => feats.push({ type: 'Feature', properties: { ...base, kind: 'IP', index: i, R: ip.R || 0, A1: ip.A1 || 0, A2: ip.A2 || 0 }, geometry: { type: 'Point', coordinates: c(ip) } }));
+    r.ips.forEach((ip, i) => feats.push({ type: 'Feature', properties: { ...base, kind: 'IP', index: i, R: ip.R || 0, A1: ip.A1 || 0, A2: ip.A2 || 0, ...(ip.e != null ? { e: ip.e } : {}) }, geometry: { type: 'Point', coordinates: c(ip) } }));
   }
   return { type: 'FeatureCollection', features: feats };
 }
@@ -675,7 +677,7 @@ function showHelp() {
       <li><kbd>V</kbd> 選択: 道路をクリック → IP ハンドルをドラッグ。線上の小さな丸をクリックすると IP を追加。<kbd>Delete</kbd> で削除。</li>
       <li>右パネルの数値はラベルを左右にドラッグ、または <kbd>↑</kbd><kbd>↓</kbd>（<kbd>Shift</kbd> で 10 倍）で増減できます。</li>
       <li>地図左上の検索欄（<kbd>/</kbd>）で地名・住所・施設名・緯度経度を検索。住所は国土地理院、施設名などは OpenStreetMap（Nominatim）の結果を統合して表示します。</li>
-      <li><b>3D</b>（上部バーの立方体ボタン）: 地理院の標高タイルで地形を作り、計画道路を計画高・片勾配・切土／盛土のり面つきで立体表示。ドラッグで回転・右ドラッグで移動・ホイールでズーム。空・霞・影・水面つきで描き、建物は地理院ベクトルタイルの外形を押し出します（高さは OpenStreetMap に実測があれば使用、なければ推定）。「高画質で撮影」で高解像度 PNG を保存できます（<kbd>Esc</kbd> で閉じる）。重いときは「画質」を標準・軽量に。木は航空写真から森を自動判定して植えるほか、「塗って植える」「消す」で 3D 上をなぞって範囲を指定できます（塗った範囲はプロジェクトに保存）。</li>
+      <li><b>3D</b>（上部バーの立方体ボタン）: 地理院の標高タイルで地形を作り、計画道路を計画高・片勾配・切土／盛土のり面つきで立体表示。ドラッグで回転・右ドラッグで移動・ホイールでズーム。片勾配は IP を選んで右パネルの「片勾配」で設定できます（空欄は自動）。空・霞・影・水面つきで描き、建物は地理院ベクトルタイルの外形を押し出します（高さは OpenStreetMap に実測があれば使用、なければ推定）。「高画質で撮影」で高解像度 PNG を保存できます（<kbd>Esc</kbd> で閉じる）。重いときは「画質」を標準・軽量に。木は航空写真から森を自動判定して植えるほか、「塗って植える」「消す」で 3D 上をなぞって範囲を指定できます（塗った範囲はプロジェクトに保存）。</li>
       <li><kbd>M</kbd> 計測、<kbd>Ctrl</kbd>+<kbd>Z</kbd> 元に戻す、<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> やり直す。</li></ul>
     <h4>線形要素</h4><ul>
       <li><span class="tag line"></span>直線 <span class="tag clothoid"></span>クロソイド（A² = R·L） <span class="tag arc"></span>円曲線。主要点は BP / KA / KE / BC / EC / EP、測点は 20m ピッチ（No.）。</li>

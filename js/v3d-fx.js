@@ -365,48 +365,20 @@ if (fxW > 0.) { vec2 g = ripple(vWp.xz, fxDist); vec3 nw = normalize(vec3(-g.x, 
     mat.customProgramCacheKey = () => 'fxF';
     return mat;
   }
-  /* 建物: 壁は窓割りを手続きで描き（ガラスは空を映す）、屋根は航空写真か瓦・陸屋根の色 */
+  /* 建物: 模様は描かず、色（航空写真の色か灰色）だけ。低い陸屋根には航空写真を貼り、壁は地面に近いほどわずかに暗くする */
   function patchBuilding(mat) {
     mat.onBeforeCompile = (sh) => {
       Object.assign(sh.uniforms, { uRoofPhoto: U.uRoofPhoto, uRoofMap: mat.userData.roofMap });
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute vec3 aB2;\nvarying vec4 vB;\nvarying vec3 vB2;\nvarying vec3 vWp;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvB = aB; vB2 = aB2; vWp = (modelMatrix*vec4(transformed, 1.)).xyz;');
+        .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nvarying vec4 vB;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvB = aB;');
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec4 vB;\nvarying vec3 vB2;\nvarying vec3 vWp;\nuniform float uRoofPhoto;\nuniform sampler2D uRoofMap;\nfloat fxGlass = 0.;\n' + GL_NOISE)
+        .replace('#include <common>', '#include <common>\nvarying vec4 vB;\nuniform float uRoofPhoto;\nuniform sampler2D uRoofMap;')
         .replace('#include <color_fragment>', `#include <color_fragment>
-{ float kind = vB.w, seed = vB.z, u = vB.x, v = vB.y, H = vB2.x;
-  vec3 base = diffuseColor.rgb;
-  if (vB2.y > .5) { // 屋根
-    vec3 rc = base;
-    if (uRoofPhoto > .5 && vB2.y < 1.5) { vec3 p = texture2D(uRoofMap, vB.xy).rgb; float l = dot(p, vec3(.3, .59, .11)); p = mix(vec3(l), p, 1.15); rc = mix(p, p*p*(3. - 2.*p), .3)*.95; }
-    else rc *= .85 + .3*vn(vWp.xz*.8 + seed*9.);
-    if (vB2.y > 1.5) rc *= .82 + .18*step(.5, fract(vB2.z*2.2)); // 瓦・板金の筋
-    diffuseColor.rgb = rc;
-  } else {
-    float fh = kind < .5 ? 2.8 : 3.4, bay = kind < .5 ? 2.6 + seed : (kind > 1.5 ? 1.6 + seed*1.6 : 2.4 + seed*1.8);
-    vec2 q = vec2(u/bay, v/fh), id = floor(q), f = fract(q);
-    float aa = clamp(max(fwidth(q.x), fwidth(q.y)), 0., 1.);
-    float r1 = h12(id + seed*91.), r2 = h12(id*1.7 + seed*37. + 5.);
-    float wx0 = .12, wx1 = .88, wy0 = .30, wy1 = .82, frac = .4, has = 1.;
-    if (kind < .5) { wx0 = .22; wx1 = .78; wy0 = .32; wy1 = .74; has = step(.42, r2); frac = .16; }
-    else if (kind > 1.5) { float cw = step(.5, fract(seed*7.3)); wx0 = mix(.1, .03, cw); wx1 = 1. - wx0; wy0 = mix(.26, .1, cw); wy1 = mix(.84, .94, cw); frac = mix(.44, .78, cw); }
-    else if (kind > 2.5) has = 0.;
-    float e = aa*1.2 + .01;
-    float win = smoothstep(wx0 - e, wx0 + e, f.x)*(1. - smoothstep(wx1 - e, wx1 + e, f.x))*smoothstep(wy0 - e, wy0 + e, f.y)*(1. - smoothstep(wy1 - e, wy1 + e, f.y))*has;
-    win *= step(v, H - .6)*step(.0, v);
-    win = mix(win, frac*has, smoothstep(.25, .7, aa)); // 遠くでは平均の色に
-    vec3 wall = base*(.88 + .16*vn(vec2(u*.5, v*.25) + seed*13.))*(.9 + .1*smoothstep(0., 2.5, v));
-    if (kind > .5) wall *= mix(.9, 1.04, step(.5, fract(q.y*.5 + seed))); // 階ごとの帯
-    float blind = step(.86, r1); // ときどきブラインド・カーテン
-    vec3 glass = mix(mix(vec3(.30, .37, .45), vec3(.36, .44, .50), r2), vec3(.46, .44, .40), blind);
-    diffuseColor.rgb = mix(wall, glass, win);
-    fxGlass = win*(1. - blind*.85);
-  } }`)
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, .1, fxGlass);')
-        .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix(metalnessFactor, .88, fxGlass);');
+if (vB.w > .5 && vB.w < 1.5 && uRoofPhoto > .5) { vec3 p = texture2D(uRoofMap, vB.xy).rgb; float l = dot(p, vec3(.3, .59, .11)); p = mix(vec3(l), p, 1.15); diffuseColor.rgb = mix(p, p*p*(3. - 2.*p), .3)*.95; }
+else if (vB.w < .5) diffuseColor.rgb *= .86 + .14*smoothstep(0., 6., vB.z);`);
     };
-    mat.customProgramCacheKey = () => 'fxB';
+    mat.customProgramCacheKey = () => 'fxB2';
     return mat;
   }
 

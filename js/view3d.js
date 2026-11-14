@@ -325,14 +325,15 @@ const V3D = (() => {
     const high = rows.filter((r) => r.z - r.g > 8).map((r) => r.s);
     let h = 0;
     rows.forEach((r) => { while (h < high.length - 1 && high[h] < r.s - 10) h++; r.bridge = high.length > 0 && Math.abs(high[h] - r.s) <= 10; });
-    // 片勾配: 曲線区間で内側へ傾ける（緩和曲線で曲率に比例してすりつけ）。直線部は 2% の拝み勾配
+    // 片勾配: 曲線区間で内側へ傾ける（緩和曲線で曲率に比例してすりつけ）。直線部は 2% の拝み勾配。
+    // 値は IP に設定した片勾配（なければ必要片勾配から自動。自動で 2% 以下なら拝み勾配のまま）
     rows.forEach((r) => {
       let c = null;
       for (const cv of al.curves) if (cv && !cv.none && cv.sTS != null && r.s >= cv.sTS - 1e-6 && r.s <= cv.sST + 1e-6) { c = cv; break; }
       let inner = -0.02, outer = -0.02;
       if (c && Math.abs(r.k) > 1e-9) {
-        const e = Rules.curveSpeed(road, c.R).e, t = Math.min(1, Math.abs(r.k) * c.R);
-        if (e > 0.02) { inner = -(0.02 + (e - 0.02) * t); outer = -0.02 + (e + 0.02) * t; }
+        const se = Rules.superelevation(road, c.ip, c.R), e = se.e, t = Math.min(1, Math.abs(r.k) * c.R);
+        if (se.set || e > 0.02) { inner = -(0.02 + (e - 0.02) * t); outer = -0.02 + (e + 0.02) * t; }
       }
       const leftInner = r.k > 0;
       r.slope = leftInner ? [inner, outer] : [outer, inner]; // [左, 右]: 外向きの勾配
@@ -347,8 +348,62 @@ const V3D = (() => {
     return r.z + sl * R.W + (R.sw > 0 ? 0.15 : 0);
   }
 
+  /* 既存道路の横断形状: 地面に貼り付けず、中心線の現況高を前後 20m でならした高さに、水平な横断（直線部は 2% の拝み勾配）で置く。
+   * 既存道路には片勾配のデータがないので、曲線部は線形の曲率と速度から推定する（i = V²/(127R) − f、上限 8%） */
+  function existingStations(ex, hRoad) {
+    const out = [];
+    if (!(opts.existing && project.existingVisible && project.existing.length)) return out;
+    const inBox = (p) => p.x > ex.x0 + 1 && p.x < ex.x1 - 1 && p.y > ex.y0 + 1 && p.y < ex.y1 - 1;
+    const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+    for (const e of project.existing) {
+      const xy = e.pts.map((q) => P.toXY(q)), parts = []; let cur = null;
+      for (const p of xy) { if (inBox(p)) { if (!cur) parts.push((cur = [])); cur.push(p); } else cur = null; }
+      const W = Math.max(2.5, e.width || 5) / 2, V = e.speed || 40, f = Rules.T[Rules.SPEEDS.reduce((a, b) => (Math.abs(b - V) < Math.abs(a - V) ? b : a))].f;
+      for (const part of parts) {
+        const pts = [];
+        for (let k = 0; k < part.length; k++) {
+          if (k === 0) { pts.push(part[0]); continue; }
+          const a = part[k - 1], b = part[k], l = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(1, Math.ceil(l / 3));
+          for (let m = 1; m <= n; m++) pts.push({ x: a.x + ((b.x - a.x) * m) / n, y: a.y + ((b.y - a.y) * m) / n });
+        }
+        const n = pts.length; if (n < 2) continue;
+        const s = [0]; for (let k = 1; k < n; k++) s.push(s[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y));
+        const th = pts.map((p, k) => { const a = pts[Math.max(0, k - 1)], b = pts[Math.min(n - 1, k + 1)]; return Math.atan2(b.y - a.y, b.x - a.x); });
+        const g = pts.map((p) => hRoad(P.toLL(p.x, p.y)));
+        if (g.every((h) => h == null)) continue;
+        const k0 = th.map((_, k) => { const a = Math.max(0, k - 2), b = Math.min(n - 1, k + 2); return s[b] > s[a] ? wrap(th[b] - th[a]) / (s[b] - s[a]) : 0; });
+        const avg = (arr, k, win) => { let sum = 0, c = 0; for (let m = k; m >= 0 && s[k] - s[m] <= win; m--) if (arr[m] != null) { sum += arr[m]; c++; } for (let m = k + 1; m < n && s[m] - s[k] <= win; m++) if (arr[m] != null) { sum += arr[m]; c++; } return c ? sum / c : null; };
+        const rows = pts.map((p, k) => {
+          const kk = avg(k0, k, 15) || 0, e2 = Math.min(0.08, Math.max(0, (V * V * Math.abs(kk)) / 127 - f)), t = Math.min(1, e2 / 0.02);
+          const inner = -Math.max(0.02, e2), outer = -0.02 + (e2 + 0.02) * t;
+          return { s: s[k], x: p.x, y: p.y, c: Math.cos(th[k]), sn: Math.sin(th[k]), k: kk, z: avg(g, k, 20) ?? 0, slope: kk > 0 ? [inner, outer] : [outer, inner], bridge: false };
+        });
+        out.push({ rows, W, sw: 0, E: W, cw: 0, L: s[n - 1], existing: true });
+      }
+    }
+    return out;
+  }
+  /* 既存道路の所の地形を路面に合わせる（幅員内は路面のすぐ下、外側 4m でなじませる） */
+  function carveExisting(ex, G, exX) {
+    const { nx, ny, sp, H } = G, best = new Float32Array(nx * ny).fill(Infinity), src = Float32Array.from(H);
+    for (const R of exX) {
+      const flat = R.W + sp * 0.75, reach = flat + 4;
+      for (const r of R.rows) {
+        const i0 = Math.max(0, Math.floor((r.x - reach - ex.x0) / sp)), i1 = Math.min(nx - 1, Math.ceil((r.x + reach - ex.x0) / sp));
+        const j0 = Math.max(0, Math.floor((ex.y1 - r.y - reach) / sp)), j1 = Math.min(ny - 1, Math.ceil((ex.y1 - r.y + reach) / sp));
+        for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+          const vx = G.gx(i) - r.x, vy = G.gy(j) - r.y, d = -vx * r.sn + vy * r.c, a = Math.abs(d), d2 = vx * vx + vy * vy, k = j * nx + i;
+          if (a > reach || Math.abs(vx * r.c + vy * r.sn) > 2.6 || d2 >= best[k]) continue;
+          best[k] = d2;
+          const top = surfZ(R, r, Math.max(-R.W, Math.min(R.W, d))) - 0.12;
+          H[k] = a <= flat ? top : top + (src[k] - top) * sstep(a - flat, 0, 4);
+        }
+      }
+    }
+  }
+
   /* ───────── 地形メッシュ（切土・盛土で整形） ───────── */
-  function buildTerrain(ex, hGround, roadsX, texInfo) {
+  function buildTerrain(ex, hGround, roadsX, texInfo, exX = []) {
     const sp = Math.max(1.2, ex.D / 260), nx = Math.ceil(ex.w / sp) + 1, ny = Math.ceil(ex.h / sp) + 1;
     const N = nx * ny, H = new Float32Array(N), H0 = new Float32Array(N), earth = new Float32Array(N * 4);
     const gx = (i) => ex.x0 + (ex.w * i) / (nx - 1), gy = (j) => ex.y1 - (ex.h * j) / (ny - 1); // j=0 が北端
@@ -357,6 +412,7 @@ const V3D = (() => {
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { const h = hGround(P.toLL(gx(i), gy(j))); raw[j * nx + i] = h; if (h != null && h !== SEA) { sum += h; cnt++; } }
     const mean = cnt ? sum / cnt : 0;
     for (let k = 0; k < N; k++) { const sea = raw[k] === SEA; H0[k] = H[k] = sea ? 0 : raw[k] ?? mean; if (sea) earth[k * 4 + 3] = 1; } // 海は標高 0 の水面
+    if (exX.length) { carveExisting(ex, { nx, ny, sp, H, gx, gy }, exX); H0.set(H); } // 既存道路の路盤（計画の切盛とは区別する）
     // 切盛: 路面の下 0.4m まで掘る／盛る。路肩（歩道）端から 盛土 1:1.5・切土 1:1.0
     for (const R of roadsX) {
       const rows = R.rows, reach = R.E + SLOPE_MAX + SLOPE_FADE;
@@ -379,7 +435,7 @@ const V3D = (() => {
         else { const c = h + (top + u * 1.0 - h) * w; if (c < h) { H[k] = c; earth[k * 4 + 1] = Math.max(earth[k * 4 + 1], Math.min(1, (h - c) / 0.6) * Math.min(1, w * 1.5)); } }
       }
     }
-    return { nx, ny, sp, H, H0, earth, gx, gy, mean, tex: texInfo };
+    return { nx, ny, sp, H, H0, earth, gx, gy, mean, tex: texInfo, exX };
   }
   const SLOPE_MAX = 30, SLOPE_FADE = 15;
   /* 整形後の地形高（双一次補間） */
@@ -548,29 +604,13 @@ const V3D = (() => {
         }
       }
     }
-    // 既存道路（地形に沿わせた帯）
-    if (opts.existing && project.existingVisible && project.existing.length) {
-      const exM = mat(0xb4b6ba, { roughness: 0.9, map: asphaltTex(), polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
-      const inBox = (p) => p.x > ex.x0 + 1 && p.x < ex.x1 - 1 && p.y > ex.y0 + 1 && p.y < ex.y1 - 1;
-      for (const e of project.existing) {
-        const xy = e.pts.map((q) => P.toXY(q));
-        const parts = []; let cur = null;
-        for (const p of xy) { if (inBox(p)) { if (!cur) parts.push((cur = [])); cur.push(p); } else cur = null; }
-        const w = Math.max(2.5, e.width || 5) / 2;
-        for (const part of parts) {
-          const pts = [];
-          for (let k = 0; k < part.length; k++) {
-            if (k === 0) { pts.push(part[0]); continue; }
-            const a = part[k - 1], b = part[k], l = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(1, Math.ceil(l / 3));
-            for (let m = 1; m <= n; m++) pts.push({ x: a.x + ((b.x - a.x) * m) / n, y: a.y + ((b.y - a.y) * m) / n });
-          }
-          if (pts.length < 2) continue;
-          const rowsE = pts.map((p, k) => {
-            const a = pts[Math.max(0, k - 1)], b = pts[Math.min(pts.length - 1, k + 1)], th = Math.atan2(b.y - a.y, b.x - a.x), nx = -Math.sin(th), ny = Math.cos(th);
-            return [-w, w].map((d) => { const x = p.x + nx * d, y = p.y + ny * d; return toV(x, y, terrainAt(G, ex, x, y) + 0.12); });
-          });
-          world.add(mesh(ribbonGeo(rowsE), exM, false));
-        }
+    // 既存道路（ならした高さ・推定した片勾配の路面）
+    if (G.exX.length) {
+      const exM = mat(0xffffff, { roughness: 0.9, map: asphaltTex(), polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+      exM.color.setScalar(1.45); // 計画道路（新しい舗装）より少し白っぽく
+      for (const R of G.exX) {
+        world.add(mesh(ribbonGeo(R.rows.map((r) => [P3(R, r, -R.W, 0.04), P3(R, r, 0, 0.04), P3(R, r, R.W, 0.04)])), exM, false));
+        for (const sgn of [-1, 1]) world.add(mesh(ribbonGeo(R.rows.map((r) => { const t = P3(R, r, sgn * R.W, 0.04); return [[t[0], t[1] - 0.5, t[2]], t]; })), exM, false));
       }
     }
     return world;
@@ -1021,7 +1061,7 @@ const V3D = (() => {
         if (my !== st.building || !st.open) return;
         const hRoad = (ll) => { const h = hRaw(ll); return h === SEA ? 0 : h; };
         const roadsX = ex.roads.map((r) => roadStations(r, hRoad)).filter(Boolean);
-        const G = buildTerrain(ex, hRaw, roadsX, texInfo);
+        const G = buildTerrain(ex, hRaw, roadsX, texInfo, existingStations(ex, hRoad));
         let base = Infinity; for (const h of G.H) base = Math.min(base, h);
         const excl = treeExclusion(ex, G, roadsX), isWater = waterMask(ex, city && city.water);
         FX.U.uSeaY.value = -base * opts.exag;

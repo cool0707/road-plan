@@ -1,5 +1,5 @@
 /* Road Plan — 3D ビューの建物・水面
- * 地理院 最適化ベクトルタイル（optimal_bvmap, z16）の建物（BldA）と水域（WA）を読み、建物を押し出す（住宅は切妻屋根、ビルは陸屋根＋塔屋）。
+ * 地理院 最適化ベクトルタイル（optimal_bvmap, z16）の建物（BldA）と水域（WA）を読み、建物を押し出す（住宅は切妻屋根、ほかは陸屋根。窓などの模様は描かない）。
  * 高さは OpenStreetMap に登録された実測値（PLATEAU から取り込まれた高さ・階数を含む。OpenFreeMap のベクトルタイル経由）を使い、
  * 無い建物だけ種別・面積・位置から推定する。
  * ブラウザでは V3DCity、node（テスト）では module.exports。 */
@@ -347,19 +347,19 @@
     if (best) best.fill = a / Math.max(1e-6, best.A);
     return best;
   }
-  const WALLS = [
-    [0xe9e4d8, 0xd8d2c4, 0xc9c0b0, 0xb8b4ac, 0xe6dcc8, 0x9a8f80, 0xf0eee8, 0x7d7468, 0xcfd3d0],
-    [0xd9d5cc, 0xc8c4bb, 0xb9b3a8, 0xe4e0d6, 0xa8a49c, 0xb49a84, 0x8c8e90, 0xd2cbbb],
-    [0xc9ced2, 0xaeb6bd, 0xdcdcd6, 0x9aa3ab, 0xe6e4de, 0x8793a0, 0xb9b4aa],
-    [0xb8bcc0, 0x9fa6a0, 0xc6c2b8],
-  ];
-  const ROOFS = [0x4a4d52, 0x5b4a40, 0x3d4a5c, 0x6b3f33, 0x7a7d80, 0x2f3338, 0x556068], FLAT = [0x8f8f8a, 0xa29f97, 0x7c7f80, 0x9a9a92];
+  /* 建物の色: 航空写真のその場所の色（暗すぎ・明るすぎはならす）。写真がなければ灰色 */
+  const GREY = 0xb4b6b8;
+  function photoColor(ph) {
+    const l = 0.3 * ph[0] + 0.59 * ph[1] + 0.11 * ph[2], t = Math.min(0.8, Math.max(0.34, l)), k = t / Math.max(0.02, l);
+    return ph.map((v) => Math.min(1, Math.max(0, (l + (v - l) * 0.9) * k)));
+  }
 
   /* 建物の BufferGeometry を作る。
    * c = { T, toV(x,y,z)→[X,Y,Z], ground(x,y)→標高, skip(x,y)→bool（計画道路・のり面）, roofUv(x,y)→[u,v]|null, photo(x,y)→[r,g,b]|null（sRGB 0..1） }
-   * 頂点属性 aB = (u, v, 乱数, 種類) / 屋根では (写真の u, v, 乱数, 種類)、aB2 = (高さ, 屋根フラグ 0:壁 1:写真の陸屋根 2:勾配屋根 3:無地, 屋根の筋) */
+   * 窓などの模様は描かない。色は航空写真の色（なければ灰色）で、低い陸屋根には写真そのものを貼る。
+   * 頂点属性 aB = (写真の u, v, 地面からの高さ, 屋根フラグ 0:壁 1:写真を貼る陸屋根 2:単色の屋根) */
   function buildGeometry(buildings, c) {
-    const T = c.T, pos = [], nor = [], col = [], aB = [], aB2 = [], foot = [];
+    const T = c.T, pos = [], nor = [], col = [], aB = [], foot = [];
     const color = new T.Color();
     const lin = (hex, mul = 1) => { color.setHex(hex); return [color.r * mul, color.g * mul, color.b * mul]; };
     const linRGB = (rgb) => { color.setRGB(rgb[0], rgb[1], rgb[2], T.SRGBColorSpace); return [color.r, color.g, color.b]; };
@@ -369,7 +369,7 @@
       const fl = Math.hypot(fx, fy, fz); if (fl < 1e-9) return;
       if (!n) { const s = fy < 0 ? -1 : 1; n = [(s * fx) / fl, (s * fy) / fl, (s * fz) / fl]; } // 屋根は上向きにそろえる
       const order = fx * n[0] + fy * n[1] + fz * n[2] >= 0 ? [A, B, C] : [A, C, B];
-      for (const v of order) { pos.push(v.p[0], v.p[1], v.p[2]); nor.push(n[0], n[1], n[2]); col.push(cl[0], cl[1], cl[2]); aB.push(v.b[0], v.b[1], b[0], b[1]); aB2.push(b2[0], v.b2 ? v.b2[0] : b2[1], v.b2 ? v.b2[1] : 0); }
+      for (const v of order) { pos.push(v.p[0], v.p[1], v.p[2]); nor.push(n[0], n[1], n[2]); col.push(cl[0], cl[1], cl[2]); aB.push(v.b[0], v.b[1], v.hz || 0, b2[1]); }
     };
     let count = 0, measured = 0;
     for (const bd of buildings) {
@@ -384,17 +384,10 @@
       const pitch = 0.36 + 0.2 * hash(Math.round(cx), Math.round(cy), 11), seed = hash(Math.round(cx * 2), Math.round(cy * 2), 12);
       if (gable && k.top) k.h = Math.max(2.6, k.h - pitch * box.hv); // 実測は棟の高さなので軒の高さに直す
       const zr = Math.min(zmax, zmin + 3), top = zr + k.h; // 斜面では低い側から 3m までを地階扱い
-      const wallC = lin(WALLS[k.kind][Math.floor(hash(Math.round(cx), Math.round(cy), 13) * WALLS[k.kind].length)], 0.9 + 0.2 * seed);
       const ph = c.photo ? c.photo(cx, cy) : null;
-      let roofC, roofFlag;
-      if (gable) {
-        roofFlag = 2;
-        if (ph) { const l = 0.3 * ph[0] + 0.59 * ph[1] + 0.11 * ph[2], s = 0.75 / Math.max(0.35, l + 0.25); roofC = linRGB([Math.min(1, (l + (ph[0] - l) * 1.3) * s), Math.min(1, (l + (ph[1] - l) * 1.3) * s), Math.min(1, (l + (ph[2] - l) * 1.3) * s)].map((v) => Math.max(0.05, v * 0.62))); }
-        else roofC = lin(ROOFS[Math.floor(hash(Math.round(cx), Math.round(cy), 14) * ROOFS.length)]);
-      } else {
-        roofFlag = c.roofUv && k.h < 22 ? 1 : 3;
-        roofC = lin(FLAT[Math.floor(hash(Math.round(cx), Math.round(cy), 14) * FLAT.length)], k.kind === 3 ? 1.15 : 1);
-      }
+      const baseC = ph ? linRGB(photoColor(ph)) : lin(GREY, 0.94 + 0.12 * seed);
+      const wallC = baseC, roofC = ph ? baseC : [baseC[0] * 0.86, baseC[1] * 0.86, baseC[2] * 0.86];
+      const roofFlag = !gable && c.roofUv && k.h < 22 ? 1 : 2; // 高い建物は写真が倒れ込んでずれるので単色
       const wb = [seed, k.kind], rb = [seed, k.kind];
       const roofZ = (x, y) => (gable ? top + pitch * Math.max(0, box.hv - Math.abs(-x * box.uy + y * box.ux - box.cv)) : top);
       for (const pt of bd.parts) {
@@ -419,22 +412,22 @@
             if (!(sm2 && sm2.has(i))) {
               const nx = (sgn * (q[1] - p[1])) / l, ny = (-sgn * (q[0] - p[0])) / l, n = [nx, 0, -ny];
               const zb = zmin - 1.5, zp = roofZ(p[0], p[1]), zq = roofZ(q[0], q[1]);
-              const A = { p: c.toV(p[0], p[1], zb), b: [u, zb - zr] }, B = { p: c.toV(q[0], q[1], zb), b: [u + l, zb - zr] };
-              const C = { p: c.toV(q[0], q[1], zq), b: [u + l, zq - zr] }, D = { p: c.toV(p[0], p[1], zp), b: [u, zp - zr] };
+              const A = { p: c.toV(p[0], p[1], zb), b: [0, 0], hz: zb - zr }, B = { p: c.toV(q[0], q[1], zb), b: [0, 0], hz: zb - zr };
+              const C = { p: c.toV(q[0], q[1], zq), b: [0, 0], hz: zq - zr }, D = { p: c.toV(p[0], p[1], zp), b: [0, 0], hz: zp - zr };
               tri(A, B, C, n, wallC, wb, [k.h, 0]); tri(A, C, D, n, wallC, wb, [k.h, 0]);
             }
             u += l;
           }
         }
         // 屋根
-        const uvOf = (x, y) => (roofFlag === 1 ? c.roofUv(x, y) : [x, y]);
+        const uvOf = (x, y) => (roofFlag === 1 ? c.roofUv(x, y) : [0, 0]);
         const roofTris = (cont, holes, stripe) => {
           const V2 = (r) => r.map((p) => new T.Vector2(p[0], p[1]));
           const all = cont.concat(...holes);
           let faces = [];
           try { faces = T.ShapeUtils.triangulateShape(V2(cont), holes.map(V2)); } catch (e) { faces = []; }
           for (const f of faces) {
-            const vs = f.map((i) => { const p = all[i]; return { p: c.toV(p[0], p[1], roofZ(p[0], p[1])), b: uvOf(p[0], p[1]), b2: [roofFlag, stripe ? Math.abs(-p[0] * box.uy + p[1] * box.ux - box.cv) : 0] }; });
+            const vs = f.map((i) => { const p = all[i]; return { p: c.toV(p[0], p[1], roofZ(p[0], p[1])), b: uvOf(p[0], p[1]), hz: k.h }; });
             tri(vs[0], vs[1], vs[2], null, roofC, rb, [k.h, roofFlag]);
           }
         };
@@ -446,23 +439,6 @@
         } else roofTris(outer, pt.holes, false);
         foot.push(outer);
       }
-      // 塔屋（中高層の屋上の機械室）
-      if (!gable && k.kind >= 1 && k.kind <= 2 && k.h > 13 && single && box.fill > 0.7 && bd.area > 150) {
-        const s = 0.28 + 0.14 * seed, ph2 = 2.6 + 2.2 * hash(Math.round(cx), Math.round(cy), 15), ox = (hash(Math.round(cx), Math.round(cy), 16) - 0.5) * box.hu * 0.5;
-        const ctrx = box.cu * box.ux - box.cv * box.uy + ox * box.ux, ctry = box.cu * box.uy + box.cv * box.ux + ox * box.uy; // 外接長方形の中心（＋長辺方向にずらす）
-        const hu = box.hu * s, hv = box.hv * s * 1.2;
-        const cs = [[-hu, -hv], [hu, -hv], [hu, hv], [-hu, hv]].map(([a, b]) => [ctrx + a * box.ux - b * box.uy, ctry + a * box.uy + b * box.ux]);
-        if (cs.every((p) => inRing(bd.parts[0].outer, p[0], p[1]))) {
-          const pc = [wallC[0] * 0.92, wallC[1] * 0.92, wallC[2] * 0.92];
-          cs.forEach((p, i) => {
-            const q = cs[(i + 1) % 4], l = Math.hypot(q[0] - p[0], q[1] - p[1]), n = [(q[1] - p[1]) / l, 0, (q[0] - p[0]) / l];
-            const A = { p: c.toV(p[0], p[1], top), b: [0, 0] }, B = { p: c.toV(q[0], q[1], top), b: [l, 0] }, C = { p: c.toV(q[0], q[1], top + ph2), b: [l, ph2] }, D = { p: c.toV(p[0], p[1], top + ph2), b: [0, ph2] };
-            tri(A, B, C, n, pc, [seed, 3], [ph2, 0]); tri(A, C, D, n, pc, [seed, 3], [ph2, 0]);
-          });
-          const vs = cs.map((p) => ({ p: c.toV(p[0], p[1], top + ph2), b: [p[0], p[1]], b2: [3, 0] }));
-          tri(vs[0], vs[1], vs[2], [0, 1, 0], roofC, rb, [k.h, 3]); tri(vs[0], vs[2], vs[3], [0, 1, 0], roofC, rb, [k.h, 3]);
-        }
-      }
       count++;
     }
     const g = new T.BufferGeometry();
@@ -470,7 +446,6 @@
     g.setAttribute('normal', new T.BufferAttribute(new Float32Array(nor), 3));
     g.setAttribute('color', new T.BufferAttribute(new Float32Array(col), 3));
     g.setAttribute('aB', new T.BufferAttribute(new Float32Array(aB), 4));
-    g.setAttribute('aB2', new T.BufferAttribute(new Float32Array(aB2), 3));
     return { geometry: g, count, measured, footprints: foot };
   }
 
