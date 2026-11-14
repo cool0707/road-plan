@@ -7,6 +7,7 @@
 
 ## 主な機能
 
+- **場所の検索**: 地名・住所・施設名・緯度経度で検索（国土地理院 住所検索 API + OpenStreetMap Nominatim）
 - **線形作図（IP法）**: クリックで IP を置くと、直線 − クロソイド − 円曲線 − クロソイド − 直線 を自動生成。R、A1/A2（非対称可）、L を数値・ドラッグで編集
 - **既存道路の読み込み**: OpenStreetMap（Overpass API）/ 国土地理院ベクトルタイル提供実験（道路中心線）。名称・種別・幅員・速度・方位角・延長を表示
 - **接続**: 端点を既存道路や他の計画道路に吸着。「交差・T字」または「延伸（接線方向に拘束）」
@@ -39,4 +40,4 @@ Google マップを背景にするには Google Maps Platform の **Map Tiles AP
 node --test test/geom.test.js
 ```
 
-構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `js/report.js`（PDF 用レポート）, `js/vectorstyle.js`（ベクトル地図のスタイル）, `vendor/leaflet`（Leaflet 1.9.4）, `vendor/maplibre`（MapLibre GL JS 5.24.0 + maplibre-gl-leaflet 0.1.4、ベクトル地図・既存道路の描画時に読み込み）
+構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `js/report.js`（PDF 用レポート）, `js/search.js`（地名・住所検索）, `js/vectorstyle.js`（ベクトル地図のスタイル）, `vendor/leaflet`（Leaflet 1.9.4）, `vendor/maplibre`（MapLibre GL JS 5.24.0 + maplibre-gl-leaflet 0.1.4、ベクトル地図・既存道路の描画時に読み込み）

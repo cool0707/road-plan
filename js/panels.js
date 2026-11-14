@@ -456,6 +456,7 @@ function showHelp() {
       <li>既存道路（緑の線）や他の計画道路の近くでは緑の丸に吸着し、そこに<b>接続</b>します。接続後は右パネルで「交差・T字」か「延伸（接線方向に拘束）」を選べます。</li>
       <li><kbd>V</kbd> 選択: 道路をクリック → IP ハンドルをドラッグ。線上の小さな丸をクリックすると IP を追加。<kbd>Delete</kbd> で削除。</li>
       <li>右パネルの数値はラベルを左右にドラッグ、または <kbd>↑</kbd><kbd>↓</kbd>（<kbd>Shift</kbd> で 10 倍）で増減できます。</li>
+      <li>地図左上の検索欄（<kbd>/</kbd>）で地名・住所・施設名・緯度経度を検索。住所は国土地理院、施設名などは OpenStreetMap（Nominatim）の結果を統合して表示します。</li>
       <li><kbd>M</kbd> 計測、<kbd>Ctrl</kbd>+<kbd>Z</kbd> 元に戻す、<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> やり直す。</li></ul>
     <h4>線形要素</h4><ul>
       <li><span class="tag line"></span>直線 <span class="tag clothoid"></span>クロソイド（A² = R·L） <span class="tag arc"></span>円曲線。主要点は BP / KA / KE / BC / EC / EP、測点は 20m ピッチ（No.）。</li>
