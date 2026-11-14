@@ -125,6 +125,7 @@ function reportHtml() {
       ${tbl(['判定', '項目', '内容', '根拠'], ['error', 'warn', 'info', 'ok'].flatMap((l) => res.filter((x) => x.level === l)).map((x) => [`<span class="lv ${x.level}">${LV[x.level]}</span>`, esc(x.title), esc(x.detail), esc(x.ref)]))}
       <p class="sm">道路構造令（本則の表）・建築基準法施行令および「道路構造令の解説と運用」の一般的な目安に基づく簡易照査です。条例・道路管理者基準・特例値の適用条件は別途確認してください。</p></div>`;
   }
+  if (typeof TrafficUI !== 'undefined') h += TrafficUI.report(tbl); // 交通量の予測（計算済みのとき）
   return h;
 }
 

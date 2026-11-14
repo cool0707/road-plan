@@ -293,3 +293,58 @@ svg.xchart { width: 100%; display: block; user-select: none; touch-action: none;
 .xs-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; }
 .xs-h { background: #fff; border: 2px solid #d6246e; transform: rotate(45deg); border-radius: 2px; box-sizing: border-box; cursor: move; }
 .pt-label.xs-end { background: #d6246e; color: #fff; padding: 1px 5px; border-radius: 4px; text-shadow: none; font-weight: 700; }
+
+/* ───────── 交通量の予測 ───────── */
+#map.tool-tobs, #map.tool-tobs .leaflet-interactive { cursor: crosshair; }
+body.traffic-on .leaflet-exband-pane { opacity: 0.12 !important; } body.traffic-on .leaflet-existing-pane { opacity: 0.15; }
+.tr-head { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: #fff; z-index: 2; }
+.tr-head b { font-size: 12px; } .tr-head .muted { flex: 1; font-size: 10.5px; }
+.tr-stale { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--accent-bg); border-bottom: 1px solid var(--line); }
+.tr-warn { padding: 8px 12px; background: #fff6e0; color: #6b4a00; border-bottom: 1px solid var(--line); font-size: 10.5px; }
+.tr-seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; background: var(--bg2); border-radius: 6px; padding: 2px; }
+.tr-seg button { height: 24px; border-radius: 4px; font-weight: 500; white-space: nowrap; } .tr-seg button.on { background: #fff; box-shadow: 0 0 0 1px var(--line); font-weight: 600; } .tr-seg button:disabled { color: var(--text3); cursor: default; }
+.tr-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 8px; font-size: 10.5px; color: var(--text2); }
+.tr-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; } .tr-legend i { width: 18px; height: 5px; border-radius: 2px; flex: none; } .tr-legend i.ramp { width: 70px; }
+.tr-legend.ln { padding-top: 6px; border-top: 1px solid var(--line); margin-top: 6px; }
+.tr-legend .l-real { background: #52514e; } .tr-legend .l-est { background: repeating-linear-gradient(90deg, #52514e 0 5px, transparent 5px 8px); }
+.tr-legend .l-pred { background: radial-gradient(circle, #fff 1px, transparent 1.4px) 0 50% / 5px 5px repeat-x, #52514e; }
+.tr-st { display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 2px; border-radius: 3px; font: 600 9.5px/1 Inter, system-ui, sans-serif; font-style: normal; vertical-align: 1px; }
+.tr-st.real { background: #1e1e1e; color: #fff; } .tr-st.est, .tr-st.attr { border: 1px dashed #757575; color: #52514e; } .tr-st.pred { border: 1px solid #6250d6; color: #4a3aa7; background: #f1effc; }
+.tr-src { display: inline-block; border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: 600; white-space: nowrap; background: #1e1e1e; color: #fff; }
+.tr-src.jartic { background: #256abf; } .tr-src.local { background: #008300; } .tr-src.census { background: #6b5b45; }
+.tr-src.est { background: none; color: #52514e; box-shadow: inset 0 0 0 1px #898781; border: 0; outline: 1px dashed transparent; }
+.tr-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.tr-cover { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg3); gap: 2px; margin-bottom: 5px; }
+.tr-cover i.real { background: #1e1e1e; } .tr-cover i.est { background: repeating-linear-gradient(90deg, #52514e 0 4px, #b3b3b3 4px 7px); } .tr-cover i.attr { background: #cfcfcf; }
+table.tr-tbl td, table.tr-tbl th { padding: 3px 4px; } table.tr-tbl th[colspan] { text-align: left; color: var(--text); font-weight: 600; padding-top: 7px; border-bottom: 0; }
+table.tr-tbl td.dn, .tr-rank .dn { color: #184f95; font-weight: 600; } table.tr-tbl td.up, .tr-rank .up { color: #a11d17; font-weight: 600; }
+table.tr-tbl + .kv { margin-top: 8px; }
+.tr-sub { padding: 12px 0 4px; border-top: 1px solid var(--line); margin-top: 10px; font-size: 11px; }
+.tr-cand { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 5px; } .tr-cand.on { background: var(--bg2); }
+.tr-cand > div { flex: 1; min-width: 0; } .tr-cand b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; } .tr-cand .muted { display: block; font-size: 10.5px; }
+.btn.xs { height: 20px; padding: 0 6px; font-size: 10.5px; } .btn.on { background: var(--accent-bg); border-color: var(--accent); color: #007be5; }
+.tr-plan { display: grid; grid-template-columns: auto 1fr; gap: 4px 6px; align-items: center; margin-bottom: 8px; } .tr-plan > span:not(.dot), .tr-plan > label { grid-column: 1 / -1; } .tr-plan .dot { width: 8px; height: 8px; border-radius: 50%; }
+.tr-rank { display: grid; grid-template-columns: 1fr auto auto; gap: 0 8px; padding: 4px 6px; border-radius: 5px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.tr-rank:hover { background: var(--bg2); } .tr-rank b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; } .tr-rank .muted { grid-column: 1 / -1; font-size: 10.5px; }
+.tr-mnote { margin: -2px 0 8px; } .tr-credit { margin-top: 6px; }
+.tr-adv { margin-top: 4px; } .tr-adv summary { cursor: pointer; color: var(--text2); padding: 4px 0; } .tr-adv .row { margin-top: 6px; }
+svg.tr-scatter { width: 100%; height: auto; display: block; margin-bottom: 4px; }
+svg.tr-scatter text { font-size: 8.5px; fill: #757575; } svg.tr-scatter .g { stroke: #e6e6e6; stroke-width: 1; } svg.tr-scatter .d { stroke: #898781; stroke-width: 1; stroke-dasharray: 3 3; }
+svg.tr-scatter circle { fill: #2a78d6; stroke: #fff; stroke-width: 2; cursor: pointer; } svg.tr-scatter circle:hover { fill: #104281; }
+.tr-tip { background: #fff; color: #1e1e1e; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 11px/1.5 Inter, system-ui, sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+.tr-tip::before { display: none; } .tr-tip .mu { color: #757575; margin-left: 6px; } .tr-tip table { border-collapse: collapse; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.tr-tip th { font-weight: 500; color: #757575; font-size: 10px; text-align: right; padding: 0 0 0 8px; } .tr-tip td { text-align: right; padding: 1px 0 1px 8px; } .tr-tip td:first-child { text-align: left; padding-left: 0; }
+.pt-label.tr-dir { background: #1e1e1e; color: #fff; padding: 3px 6px; border-radius: 4px; text-shadow: none; font-weight: 500; }
+.tr-ob { width: 14px; height: 14px; border-radius: 50%; background: #1e1e1e; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); box-sizing: border-box; cursor: pointer; }
+.tr-ob.jartic { border-radius: 2px; background: #256abf; } .tr-ob.local { border-radius: 2px; background: #008300; transform-origin: center; rotate: 45deg; }
+.tr-ob.un { background: #fff; border-color: #a11d17; } .tr-ob.off { opacity: 0.4; } .tr-ob.sel { box-shadow: 0 0 0 3px var(--accent); }
+/* データ表 */
+.tr-per { display: inline-flex; align-items: center; gap: 6px; color: var(--text2); } .tr-per select { height: 24px; border: 1px solid var(--line); border-radius: 5px; background: #fff; padding: 0 4px; }
+.tr-scroll { flex: 1; overflow: auto; min-height: 0; }
+table.tr-data { min-width: 860px; } table.tr-data thead th { position: sticky; top: 0; background: #fff; z-index: 1; text-align: left; }
+table.tr-data td { padding: 2px 4px; text-align: left; } table.tr-data td.dl { color: var(--text2); font-size: 10.5px; white-space: nowrap; text-align: right; padding-left: 10px; }
+table.tr-data input.cell { max-width: 96px; } table.tr-data input.cell.txt { max-width: none; min-width: 170px; text-align: left; } table.tr-data input.cell[data-tcell$="|date"] { max-width: 110px; text-align: left; }
+table.tr-data input.cell.conv::placeholder { color: #898781; font-style: italic; } table.tr-data input.cell[readonly] { background: none; color: var(--text2); }
+table.tr-data tr.sel td { background: var(--accent-bg); } table.tr-data tr.off td { opacity: 0.5; } table.tr-data tr.grp td { background: var(--bg2); padding: 4px 6px; } table.tr-data td.ops { white-space: nowrap; text-align: right; } table.tr-data td.ops .ibtn { display: inline-grid; }
+.tr-bad { color: #a11d17; font-weight: 600; font-size: 10.5px; border-bottom: 1px dotted; cursor: help; }
+.modal-card ol { padding-left: 18px; line-height: 1.9; } .modal-card input[type=date] { border: 0; background: none; height: 24px; }
