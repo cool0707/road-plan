@@ -1,7 +1,11 @@
+<p align="center"><img src="img/icon-192.png" width="96" height="96" alt="Road Plan アイコン"></p>
+
 # Road Plan — 道路計画デザインツール
 
 地図（地理院タイル / 地理院ベクトルタイル / OpenStreetMap / Google / 任意の画像）に重ねて道路の平面線形を描く、ブラウザだけで動くアプリです。
 **▶ [アプリを開く（GitHub Pages）](https://cool0707.github.io/road-plan/)**
+
+![Road Plan の画面（地理院ベクトル地図に既存道路を読み込み、クロソイド付きの計画道路を作図）](img/screenshot.png)
 
 サーバー・ビルド不要。`index.html` をブラウザで開くだけで動きます（データはブラウザ内にのみ保存）。
 
