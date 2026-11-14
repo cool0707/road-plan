@@ -16,6 +16,7 @@ const ICON = {
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.500 9.500a2.500 2.500 0 115 0c0 1.500-2.500 2-2.500 4"/><circle cx="12" cy="17" r=".6"/>',
   cube: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
   exlink: '<path d="M3 18l5-6"/><path d="M16 12l5-6"/><path d="M8 12h8" stroke-dasharray="2 2.5"/><circle cx="8" cy="12" r="1.4"/><circle cx="16" cy="12" r="1.4"/>',
+  xsec: '<path d="M3 17c3-1 4-6 7-6s3 4 6 4 3-3 5-3"/><path d="M3 21h18"/><path d="M12 3v6" stroke-dasharray="2 2"/>',
   target: '<circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
 };
 const ic = (n) => `<svg class="ic" viewBox="0 0 24 24">${ICON[n]}</svg>`;
@@ -250,10 +251,12 @@ function profileSvg(road, W, H, o = {}) {
 
 /* 地図下部の縦断図 */
 function renderDock() {
-  const el = $('#vdock'), road = selRoad(), on = !!(ui.vdock && road && road.visible !== false && road.vips && road.vips.length >= 2);
+  const el = $('#vdock'), road = selRoad(), xsOn = typeof xsecActive === 'function' && xsecActive();
+  const on = xsOn || !!(ui.vdock && road && road.visible !== false && road.vips && road.vips.length >= 2);
   if (el.hidden === on) { el.hidden = !on; $('#stage').classList.toggle('dock-on', on); map.invalidateSize({ pan: false }); }
   if (!on) { el.innerHTML = ''; return; }
   const W = Math.max(320, el.clientWidth), H = Math.max(140, el.clientHeight - 32);
+  if (xsOn) { el.innerHTML = xsecDockHtml(W, H); return; } // 断面図を優先（閉じると縦断図に戻る）
   el.innerHTML = `<div class="vd-head"><b>縦断図</b><span class="muted">${esc(road.name)}・延長 ${fmt(calc(road).length, 1)} m</span>
     <span class="lg"><i class="l-plan"></i>計画高 <i class="l-gnd"></i>現況地盤 <i class="l-fill"></i>盛土 <i class="l-cut"></i>切土</span>
     <span class="muted small vd-hint">● ドラッグで測点・計画高を変更（<kbd>Shift</kbd> 高さのみ）・ダブルクリックで変化点を追加</span>
@@ -338,7 +341,7 @@ function imagePanel() {
 }
 
 function renderChrome() {
-  const tools = [['select', '選択 (V)'], ['draw', '道路を描く (P)'], ['exlink', '既存道路をつなぐ・描き足す (L)'], ['measure', '計測 (M)']];
+  const tools = [['select', '選択 (V)'], ['draw', '道路を描く (P)'], ['exlink', '既存道路をつなぐ・描き足す (L)'], ['measure', '計測 (M)'], ['xsec', '断面図 (X)']];
   $('#toolbar').innerHTML = tools.map(([t, tip]) => `<button class="${ui.tool === t ? 'on' : ''}" data-act="tool-${t}" data-tip="${tip}">${ic(t)}</button>`).join('')
     + `<span class="sep"></span><button data-act="fetch-osm" data-tip="既存道路を取得 (OSM)">${ic('roads')}</button><button data-act="add-image" data-tip="下絵画像を追加">${ic('image')}</button>`;
   const u = $('[data-act=undo]'), r = $('[data-act=redo]');
@@ -440,6 +443,9 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'v') setTool('select');
   else if (k === 'p' || k === 'r') setTool('draw');
   else if (k === 'm') setTool('measure');
+  else if (k === 'x') setTool(ui.tool === 'xsec' ? 'select' : 'xsec');
+  else if (k === 'enter' && ui.tool === 'xsec') xsecFinish();
+  else if (k === 'backspace' && ui.tool === 'xsec') { e.preventDefault(); xsecBack(); }
   else if (k === 'l') setTool(ui.tool === 'exlink' ? 'select' : 'exlink');
   else if (k === 'enter' && ui.tool === 'exlink') { ui.link.cursor = null; finishLink(null); }
   else if (k === 'backspace' && ui.tool === 'exlink') { e.preventDefault(); ui.link.pts.pop(); if (!ui.link.pts.length) { ui.link.start = null; ui.link.cursor = null; } renderMap(); }
@@ -527,6 +533,7 @@ function act(a, el) {
     case 'tool-select': return setTool('select');
     case 'tool-draw': return setTool(ui.tool === 'draw' ? 'select' : 'draw');
     case 'tool-measure': return setTool(ui.tool === 'measure' ? 'select' : 'measure');
+    case 'tool-xsec': return setTool(ui.tool === 'xsec' ? 'select' : 'xsec');
     case 'zoom-in': return map.zoomIn();
     case 'zoom-out': return map.zoomOut();
     case 'fetch-osm': return fetchOSM();
@@ -690,6 +697,7 @@ function showHelp() {
       <li>右パネルの数値はラベルを左右にドラッグ、または <kbd>↑</kbd><kbd>↓</kbd>（<kbd>Shift</kbd> で 10 倍）で増減できます。</li>
       <li>地図左上の検索欄（<kbd>/</kbd>）で地名・住所・施設名・緯度経度を検索。住所は国土地理院、施設名などは OpenStreetMap（Nominatim）の結果を統合して表示します。</li>
       <li><b>3D</b>（上部バーの立方体ボタン）: 地理院の標高タイルで地形を作り、計画道路を計画高・片勾配・切土／盛土のり面つきで立体表示。ドラッグで回転・右ドラッグで移動・ホイールでズーム。片勾配は IP を選んで右パネルの「片勾配」で設定できます（空欄は自動）。空・霞・影・水面つきで描き、建物は地理院ベクトルタイルの外形を押し出します（高さは OpenStreetMap に実測があれば使用、なければ推定）。「高画質で撮影」で高解像度 PNG を保存できます（<kbd>Esc</kbd> で閉じる）。重いときは「画質」を標準・軽量に。木は航空写真から森を自動判定して植えるほか、「塗って植える」「消す」で 3D 上をなぞって範囲を指定できます（塗った範囲はプロジェクトに保存）。</li>
+      <li><kbd>X</kbd> 断面図: 地図上で断面を見たい所に線を引く（クリックで点を追加、<kbd>ダブルクリック</kbd>/<kbd>Enter</kbd> で確定。折れ線も可）と、地図の下に線に沿った断面図を表示します。現況地盤（地理院 標高タイル）に加え、線が計画道路を横切る所は計画高・片勾配の路面と 盛土 1:1.5／切土 1:1.0 ののり面（3D と同じ形）、盛土高 8m 超は橋梁を描き、交差する計画道路・既存道路の測点・計画高・切盛高を注記します。3D を開かなくても使え、断面線の ◆ はドラッグで動かせます。「縦横同縮尺」で高さ強調なし、「CSV」で数値を保存。</li>
       <li><kbd>M</kbd> 計測、<kbd>Ctrl</kbd>+<kbd>Z</kbd> 元に戻す、<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> やり直す。</li></ul>
     <h4>線形要素</h4><ul>
       <li><span class="tag line"></span>直線 <span class="tag clothoid"></span>クロソイド（A² = R·L） <span class="tag arc"></span>円曲線。主要点は BP / KA / KE / BC / EC / EP、測点は 20m ピッチ（No.）。</li>

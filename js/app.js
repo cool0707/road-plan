@@ -692,6 +692,7 @@ function renderMap() {
   if (ui.draw) drawPreview();
   if (ui.measure.length) drawMeasure();
   if (ui.link) drawLinkPreview();
+  if (typeof xsecRender === 'function') xsecRender();
   if (ui.sel && ui.sel.type === 'existing' && ui.sel.at) L.circleMarker(ui.sel.at, { radius: 5, color: '#0d99ff', weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false }).addTo(gMisc);
   if (!ui.dragging) renderHandles();
   $('#zoomLabel').textContent = 'z ' + map.getZoom().toFixed(1);
@@ -742,6 +743,7 @@ function renderHandles() {
     }
   }
   if (ui.sel && ui.sel.type === 'existing' && ui.tool === 'select') renderExEnds();
+  if (typeof xsecHandles === 'function') xsecHandles();
   if (ui.sel && ui.sel.type === 'image' && project.image && project.image.visible) {
     const im = project.image, cs = imageCorners();
     const outline = L.polygon(cs, { color: '#7b61ff', weight: 1.5, dashArray: '6 4', fill: false, interactive: false }).addTo(gHandles);
@@ -765,11 +767,13 @@ const HINTS = {
   draw: 'クリックで IP を追加 ・ 既存道路の近くで吸着して接続 ・ <kbd>ダブルクリック</kbd>/<kbd>Enter</kbd> で確定 ・ <kbd>Backspace</kbd> で1点戻す ・ <kbd>Alt</kbd> で吸着オフ ・ <kbd>Esc</kbd> で中止',
   measure: '2点をクリックして距離と方位角を計測 ・ <kbd>Esc</kbd> で終了',
   pick: '下絵上で実距離が分かる 2 点をクリックしてください ・ <kbd>Esc</kbd> で中止',
+  xsec: '断面を見たい所をクリックして線を引く（折れ線可）・ <kbd>ダブルクリック</kbd>/<kbd>Enter</kbd> で確定 ・ <kbd>Backspace</kbd> で1点戻す ・ <kbd>Esc</kbd> で終了',
   exlink: '途切れた道路の端点（または道路上）をクリック → 経由点 → つなぐ先の道路をクリックで確定 ・ <kbd>Enter</kbd> で行き止まりのまま確定 ・ <kbd>Alt</kbd> で吸着オフ ・ <kbd>Esc</kbd> で終了',
 };
 function setTool(t) {
   if (ui.tool === 'draw' && t !== 'draw') ui.draw = null;
   ui.tool = t; ui.measure = []; if (t !== 'pick') ui.pick = null;
+  if (typeof xsecStart === 'function') { if (t === 'xsec') xsecStart(); else xsecStop(); }
   ui.link = t === 'exlink' ? { pts: [], start: null, cursor: null } : null;
   if (t === 'exlink' && !project.existingVisible) { project.existingVisible = true; save(); }
   showSnap(null);
@@ -926,6 +930,8 @@ map.on('click', (e) => {
     renderMap();
   } else if (ui.tool === 'exlink') {
     linkClick(e);
+  } else if (ui.tool === 'xsec') {
+    xsecClick(e);
   } else if (ui.tool === 'measure') {
     if (ui.measure.length >= 2) ui.measure = [];
     ui.measure.push(P.toXY(e.latlng)); renderMap();
@@ -934,7 +940,7 @@ map.on('click', (e) => {
     if (ui.pick.length === 2) finishScalePick();
   } else if (ui.sel) select(null);
 });
-map.on('dblclick', () => { if (ui.tool === 'draw') { ui.draw.cursor = null; finishDraw(); } else if (ui.tool === 'exlink') { ui.link.cursor = null; finishLink(null); } });
+map.on('dblclick', () => { if (ui.tool === 'draw') { ui.draw.cursor = null; finishDraw(); } else if (ui.tool === 'exlink') { ui.link.cursor = null; finishLink(null); } else if (ui.tool === 'xsec') xsecFinish(); });
 let moveRaf = 0;
 map.on('mousemove', (e) => {
   if (moveRaf) return;
@@ -957,6 +963,7 @@ map.on('mousemove', (e) => {
       ui.draw.cursor = ui.draw.ips.length ? P.toXY(snap ? snap.latlng : e.latlng) : null;
       gPreview.clearLayers(); drawPreview();
     }
+    if (ui.tool === 'xsec') xsecMove(e);
     if (ui.tool === 'exlink' && ui.link) {
       const sn = e.originalEvent.altKey ? null : exSnapAt(e.containerPoint);
       showSnap(sn && { latlng: sn.latlng, label: exSnapLabel(sn) });

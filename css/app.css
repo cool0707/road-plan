@@ -272,3 +272,24 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 #v3d .v3btns .btn.on { background: var(--accent-bg); border-color: var(--accent); color: #007be5; }
 #v3d .v3cnt { float: right; font-weight: 500; color: var(--text2); }
 #v3d .v3row > span, #v3d .v3rng > span { flex: none; white-space: nowrap; } #v3d .v3row select { min-width: 0; }
+
+/* 断面図 */
+svg.xchart { width: 100%; display: block; user-select: none; touch-action: none; background: #fff; }
+.xchart .g { stroke: #e3e5e8; stroke-width: 1; } .xchart .vt { stroke: #d6246e55; stroke-width: 1; stroke-dasharray: 3 3; }
+.xchart .ax { font-size: 10px; fill: #8a8f98; font-variant-numeric: tabular-nums; }
+.xchart .gnd { fill: none; stroke: #0d99ff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.xchart .gnd-f { fill: #0d99ff14; stroke: none; }
+.xchart .fill { fill: #f5b64288; stroke: none; } .xchart .cut { fill: #a1887f88; stroke: none; }
+.xchart .slope { fill: none; stroke: #f24822; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.xchart .pave { fill: none; stroke: #3f4a5a; stroke-width: 4; stroke-linecap: butt; vector-effect: non-scaling-stroke; }
+.xchart .walk { fill: none; stroke: #b8a48c; stroke-width: 4; vector-effect: non-scaling-stroke; }
+.xchart .deck { fill: #9aa1ab; stroke: #6b7280; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.xchart .cl { stroke: #f24822; stroke-width: 1; stroke-dasharray: 3 2; } .xchart .cle { stroke: #0b7a6f; stroke-width: 1; stroke-dasharray: 3 2; }
+.xchart .xl { font-size: 10.5px; font-weight: 600; fill: #c2410c; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.xchart .xle { font-size: 10px; fill: #0b7a6f; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.xchart .ab { font-size: 12px; font-weight: 700; fill: #d6246e; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.xchart .cur line { stroke: #1e1e1e; stroke-width: 1; stroke-dasharray: 2 2; } .xchart .cur circle { fill: #fff; stroke: #d6246e; stroke-width: 2; }
+.xchart .cur text { fill: #1e1e1e; font-size: 10.5px; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.xs-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; }
+.xs-h { background: #fff; border: 2px solid #d6246e; transform: rotate(45deg); border-radius: 2px; box-sizing: border-box; cursor: move; }
+.pt-label.xs-end { background: #d6246e; color: #fff; padding: 1px 5px; border-radius: 4px; text-shadow: none; font-weight: 700; }

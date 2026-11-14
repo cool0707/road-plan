@@ -26,7 +26,7 @@ jobs:
         with:
           node-version: 20
       - name: Test
-        run: node --test test/geom.test.js test/city.test.js
+        run: node --test test/geom.test.js test/city.test.js test/xsec.test.js
       - name: Assemble site
         run: |
           mkdir -p _site
