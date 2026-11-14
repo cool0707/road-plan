@@ -174,7 +174,91 @@
     return { s, offset: off, dist: Math.hypot(x - p.x, y - p.y), pose: p };
   }
 
-  const G = { wrap, evalSeg, spiral, curveAt, computeAlignment, sampleElement, sample, poseAt, project };
+  /* ───── 折れ線（既存道路）の区間分割 ─────
+   * 位置は u = 線分番号 + 線分内の比率（0 … n-1）で表す。 */
+  function polyLen(xy) { let l = 0; for (let k = 1; k < xy.length; k++) l += Math.hypot(xy[k].x - xy[k - 1].x, xy[k].y - xy[k - 1].y); return l; }
+  /* 区切り位置: 端点・屈曲点（偏角 bendDeg 以上）・他の折れ線との交差/接続点 */
+  function polyBreaks(xy, others, opt) {
+    const o = Object.assign({ bendDeg: 30, tol: 1.5, merge: 2 }, opt), n = xy.length, us = [0, n - 1];
+    for (let k = 1; k < n - 1; k++) {
+      const a = Math.atan2(xy[k].y - xy[k - 1].y, xy[k].x - xy[k - 1].x), b = Math.atan2(xy[k + 1].y - xy[k].y, xy[k + 1].x - xy[k].x);
+      if (Math.abs(wrap(b - a)) * 180 / Math.PI >= o.bendDeg) us.push(k);
+    }
+    // 点 p に最も近い自線上の位置（距離 tol 以内）
+    const onSelf = (p) => {
+      let best = null;
+      for (let i = 0; i < n - 1; i++) {
+        const a = xy[i], b = xy[i + 1], vx = b.x - a.x, vy = b.y - a.y, l2 = vx * vx + vy * vy;
+        const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / l2)) : 0;
+        const d = Math.hypot(p.x - a.x - vx * t, p.y - a.y - vy * t);
+        if (d <= o.tol && (!best || d < best.d)) best = { d, u: i + t };
+      }
+      return best && best.u;
+    };
+    for (const q of others) {
+      if (q.length < 2) continue;
+      // 他線の端点・頂点が自線上にある（T 字・共有ノード）
+      for (const p of q) { const u = onSelf(p); if (u != null) us.push(u); }
+      // 線分どうしの交差
+      for (let j = 0; j < q.length - 1; j++) {
+        const c = q[j], d = q[j + 1];
+        for (let i = 0; i < n - 1; i++) {
+          const a = xy[i], b = xy[i + 1], rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y, den = rx * sy - ry * sx;
+          if (Math.abs(den) < 1e-12) continue;
+          const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / den, w = ((c.x - a.x) * ry - (c.y - a.y) * rx) / den;
+          if (t >= 0 && t <= 1 && w >= 0 && w <= 1) us.push(i + t);
+        }
+      }
+    }
+    // 位置順に並べ、近接（merge m 以内）する区切りをまとめる。端点は必ず残す
+    const L = polyLen(xy), at = (u) => polyLenTo(xy, u);
+    const sorted = us.filter((u) => u >= 0 && u <= n - 1).sort((a, b) => a - b), out = [];
+    for (const u of sorted) {
+      const s = at(u);
+      if (out.length && s - at(out[out.length - 1]) < o.merge) { if (u === n - 1) out[out.length - 1] = u; continue; }
+      if (u !== n - 1 && L - s < o.merge && u !== 0) continue;
+      out.push(u);
+    }
+    if (out[0] !== 0) out.unshift(0);
+    if (out[out.length - 1] !== n - 1) out.push(n - 1);
+    return out;
+  }
+  function polyLenTo(xy, u) {
+    let l = 0; const i = Math.min(Math.floor(u), xy.length - 2);
+    for (let k = 1; k <= i; k++) l += Math.hypot(xy[k].x - xy[k - 1].x, xy[k].y - xy[k - 1].y);
+    const t = u - i; if (t > 0) l += t * Math.hypot(xy[i + 1].x - xy[i].x, xy[i + 1].y - xy[i].y);
+    return l;
+  }
+  /* 点 q に最も近い位置 u */
+  function polyNearest(xy, q) {
+    let best = { d: Infinity, u: 0 };
+    for (let i = 0; i < xy.length - 1; i++) {
+      const a = xy[i], b = xy[i + 1], vx = b.x - a.x, vy = b.y - a.y, l2 = vx * vx + vy * vy;
+      const t = l2 ? Math.max(0, Math.min(1, ((q.x - a.x) * vx + (q.y - a.y) * vy) / l2)) : 0;
+      const d = Math.hypot(q.x - a.x - vx * t, q.y - a.y - vy * t);
+      if (d < best.d) best = { d, u: i + t };
+    }
+    return best.u;
+  }
+  /* 区切り breaks のうち u を含む区間 [u0, u1] */
+  function pieceAt(breaks, u) {
+    for (let k = 1; k < breaks.length; k++) if (u <= breaks[k] || k === breaks.length - 1) return [breaks[k - 1], breaks[k]];
+    return [breaks[0], breaks[breaks.length - 1]];
+  }
+  /* 点列（[a, b] の配列）の u0 … u1 部分を線形補間で切り出す */
+  function polySlice(pts, u0, u1) {
+    const n = pts.length, ip = (u) => {
+      const i = Math.min(Math.floor(u), n - 2), t = u - i, a = pts[i], b = pts[i + 1];
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    };
+    if (u1 <= u0) return [];
+    const out = [ip(u0)];
+    for (let k = Math.floor(u0) + 1; k < u1; k++) out.push(pts[k].slice());
+    out.push(ip(u1));
+    return out;
+  }
+
+  const G = { wrap, evalSeg, spiral, curveAt, computeAlignment, sampleElement, sample, poseAt, project, polyLen, polyLenTo, polyBreaks, polyNearest, pieceAt, polySlice };
   if (typeof module !== 'undefined' && module.exports) module.exports = G;
   else root.Geom = G;
 })(typeof self !== 'undefined' ? self : this);
