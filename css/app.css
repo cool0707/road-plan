@@ -192,6 +192,7 @@ img.rot-image { position: absolute; left: 0; top: 0; transform-origin: 0 0; poin
   #print th { background: #eee; font-weight: 600; text-align: center; }
   #print td:first-child, #print td:nth-child(2) { text-align: left; white-space: nowrap; }
   #print tr { break-inside: avoid; }
+  #print .vprint svg.vchart { width: 277mm; height: 80mm !important; border: 0.2mm solid #999; break-inside: avoid; } #print .vprint .cur { display: none; }
   #print .lv { font-weight: 700; } #print .lv.error { color: #d32f0e; } #print .lv.warn { color: #b77f00; } #print .lv.info { color: #5b45d6; } #print .lv.ok { color: #0e8a48; }
 }
 
@@ -207,3 +208,39 @@ img.rot-image { position: absolute; left: 0; top: 0; transform-origin: 0 0; poin
 .layer .wd { color: var(--text2); font-size: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pt-label.wd { background: #fff; color: #1e1e1e; padding: 3px 6px; border-radius: 5px; border: 1px solid #3f4a5a; text-shadow: none; font-weight: 600; }
 #hint .hint-sub { margin-top: 3px; color: #cfd6df; font-size: 11px; } #hint .hint-sub b { color: #fff; }
+
+/* 縦断計画 */
+:root { --dock-h: 250px; }
+#stage.dock-on #map { bottom: var(--dock-h); }
+#stage.dock-on #toolbar { bottom: calc(var(--dock-h) + 16px); }
+#stage.dock-on #status { bottom: calc(var(--dock-h) + 10px); }
+#stage.dock-on #zoomctl { bottom: calc(var(--dock-h) + 52px); }
+#vdock { position: absolute; left: 0; right: 0; bottom: 0; height: var(--dock-h); background: #fff; border-top: 1px solid var(--line); z-index: 1001; display: flex; flex-direction: column; }
+#vdock[hidden] { display: none; }
+.vd-head { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--bg2); flex: none; white-space: nowrap; overflow: hidden; }
+.vd-head .vd-hint { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; } .vd-head > * { flex: none; } .vd-head > .vd-hint { flex: 1 1 auto; } .vd-head .btn { height: 24px; } .vd-head kbd { background: var(--bg2); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; font: inherit; }
+.vd-head .lg { display: flex; align-items: center; gap: 4px; color: var(--text2); }
+.vd-head .lg i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-left: 6px; }
+.l-plan { background: #f24822; } .l-gnd { background: #0d99ff; } .l-fill { background: #f5b642; } .l-cut { background: #a1887f; }
+svg.vchart { width: 100%; display: block; user-select: none; touch-action: none; background: #fff; }
+svg.vchart.sm { background: var(--bg2); border-radius: 5px; }
+.vchart .g { stroke: #e3e5e8; stroke-width: 1; } .vchart .g2 { stroke: #f1f2f4; stroke-width: 1; }
+.vchart .ax { font-size: 10px; fill: #8a8f98; font-variant-numeric: tabular-nums; }
+.vchart .gnd { fill: none; stroke: #0d99ff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.vchart .gnd-f { fill: #0d99ff14; stroke: none; }
+.vchart .fill { fill: #f5b64266; stroke: none; } .vchart .cut { fill: #a1887f66; stroke: none; }
+.vchart .tan { fill: none; stroke: #9aa1ab; stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.vchart .plan { fill: none; stroke: #f24822; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.vchart .vc { stroke: #f24822; stroke-width: 1; }
+.vchart .vh { fill: #fff; stroke: #f24822; stroke-width: 2; cursor: move; vector-effect: non-scaling-stroke; }
+.vchart .vh.end { cursor: ns-resize; fill: #f24822; }
+.vchart .vh:hover { fill: #ffe1d9; }
+.vchart .vl { font-size: 10.5px; font-weight: 600; fill: #1e1e1e; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.vchart .vl2 { font-size: 9.5px; fill: #c2410c; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.vchart .gl { font-size: 10px; fill: #4b5563; paint-order: stroke; stroke: #fff; stroke-width: 3px; } .vchart .gl.bad { fill: var(--err); font-weight: 600; }
+.vchart .cur line { stroke: #1e1e1e; stroke-width: 1; stroke-dasharray: 2 2; } .vchart .cur text { fill: #1e1e1e; font-size: 10.5px; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.vmini { cursor: pointer; margin-bottom: 6px; }
+table.vtbl td { padding: 1px 2px; } table.vtbl td.bad { color: var(--err); font-weight: 600; }
+table.vtbl input.cell { width: 100%; max-width: 64px; height: 22px; border: 1px solid transparent; background: var(--bg2); border-radius: 4px; text-align: right; padding: 0 4px; font-variant-numeric: tabular-nums; outline: 0; }
+table.vtbl input.cell:hover { border-color: var(--line); } table.vtbl input.cell:focus { border-color: var(--accent); background: #fff; }
+.ibtn.xs { width: 20px; height: 20px; } .ibtn.xs svg.ic { width: 13px; height: 13px; }

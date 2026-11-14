@@ -131,14 +131,130 @@ function connBlock(road, key, label, al) {
     ${kv([['接続先', esc(c.name || '既存道路') + (c.isEnd ? '（端点）' : '')], ['既存幅員', `約 ${fmt(c.width, 1)} m`], ['既存道路の方位角', `${fmt(azimuth(c.bearing), 1)}° / ${fmt((azimuth(c.bearing) + 180) % 360, 1)}°`]])}<div style="height:8px"></div>`;
 }
 
-function profileBlock(road) {
+function groundSummary(road) {
   const pf = ui.profiles.get(road.id);
-  if (!pf) return `<button class="btn wide" data-act="profile">現況地盤の標高を取得（地理院 DEM）</button><div class="muted small" style="margin-top:6px">中心線に沿った地盤高から現況勾配を確認します。</div>`;
-  const hs = pf.pts.map((p) => p.h), lo = Math.min(...hs), hi = Math.max(...hs), span = Math.max(hi - lo, 1);
-  const d = pf.pts.map((p, i) => `${i ? 'L' : 'M'}${((p.s / pf.length) * 276).toFixed(1)},${(82 - ((p.h - lo) / span) * 70).toFixed(1)}`).join('');
-  return `<svg class="prof" viewBox="0 0 276 90" preserveAspectRatio="none"><path d="${d}L276,90L0,90Z" fill="#0d99ff22"/><path d="${d}" fill="none" stroke="#0d99ff" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
-    ${kv([['地盤高', `${fmt(lo, 1)} 〜 ${fmt(hi, 1)} m`], ['最大現況勾配（約20m区間）', `${fmt(pf.maxGrade, 1)} %（${station(pf.maxAt)} 付近）`], ['規定値', Rules.T[road.V].grade + ' %']])}`;
+  if (!pf) return '';
+  const hs = pf.pts.map((p) => p.h);
+  return kv([['地盤高', `${fmt(Math.min(...hs), 1)} 〜 ${fmt(Math.max(...hs), 1)} m`], ['最大現況勾配（約20m区間）', `${fmt(pf.maxGrade, 1)} %（${station(pf.maxAt)} 付近）`]]);
 }
+const sgnPct = (g) => `${g >= 0 ? '+' : '−'}${fmt(Math.abs(g * 100), 2)}%`;
+const cell = (key, val, step, dec, title = '') => `<input class="cell" data-key="${key}" data-step="${step}" data-dec="${dec}" value="${fmt(val, dec)}" inputmode="decimal" title="${esc(title)}">`;
+
+/* 縦断計画（計画高）ブロック */
+function vplanBlock(road) {
+  const gr = ui.profiles.get(road.id), al = calc(road), t = Rules.T[road.V], vp = vplanOf(road);
+  const groundBtn = gr ? '' : `<div class="row one"><button class="btn wide" data-act="profile" title="中心線に沿った地盤高を国土地理院の標高タイルから取得し、切土・盛土を確認">現況地盤の標高を取得（地理院 DEM）</button></div>`;
+  if (!vp) {
+    return (gr ? profileSvg(road, 276, 110, { small: true }) + groundSummary(road) + '<div style="height:8px"></div>' : '')
+      + `<div class="muted small" style="margin-bottom:8px">新しい道路は盛土・切土で高さを変えるのが普通です。縦断変化点（VIP）の測点・計画高・縦断曲線長を決めて計画縦断を作ります。</div>
+      <div class="row"><button class="btn accent" data-act="vplan-ground" title="地理院 DEM の地盤高を間引いた変化点で案を作成">現況地盤に沿う案</button><button class="btn" data-act="vplan-flat" title="起点と終点の地盤高を一定勾配で結ぶ">両端を結ぶ</button></div>`
+      + groundBtn;
+  }
+  const pf = vp.pf, n = pf.pts.length;
+  const rows = road.vips.map((v, i) => {
+    const p = pf.pts[i], end = i === 0 || i === n - 1, c = end ? null : pf.curves[i - 1], nm = i === 0 ? 'BP' : i === n - 1 ? 'EP' : 'VIP' + i;
+    const vcTitle = c && Math.abs(c.dg) > 0.0005 ? `${c.crest ? '凸形' : '凹形'} R=${isFinite(c.R) ? Math.round(c.R) : '—'}m（規定 R≥${c.crest ? t.vR : t.vRc}m・L≥${t.vL}m）` : '勾配差なし';
+    return `<tr><td>${nm}</td><td>${end ? fmt(p.s, 1) : cell(`vip.${i}.s`, v.s, 1, 1, '追加距離 [m]')}</td><td>${cell(`vip.${i}.z`, v.z, 0.1, 2, '計画高 [m]')}</td>`
+      + `<td>${end ? '<span class="muted">—</span>' : cell(`vip.${i}.VCL`, v.VCL, 5, 0, '縦断曲線長 [m] ・ ' + vcTitle)}</td>`
+      + `<td class="${i < n - 1 && Math.abs(pf.grades[i]) * 100 > t.grade + 1e-9 ? 'bad' : ''}">${i < n - 1 ? sgnPct(pf.grades[i]) : ''}</td>`
+      + `<td>${end ? '' : `<button class="ibtn xs" data-act="vip-del" data-i="${i}" title="この変化点を削除">${ic('trash')}</button>`}</td></tr>`;
+  }).join('');
+  const gmax = Math.max(...pf.grades.map((g) => Math.abs(g))) * 100, zs = pf.pts.map((p) => p.z);
+  const endTxt = (k) => (vp.ends[k] == null ? null : `${vp.ends[k] >= 0 ? '+' : '−'}${fmt(Math.abs(vp.ends[k]), 2)} m`);
+  return `<div class="vmini" data-act="vdock-open" title="クリックで縦断図を大きく表示">${profileSvg(road, 276, 110, { small: true })}</div>
+    <table class="els vtbl"><tr><th>点</th><th>測点 m</th><th>計画高 m</th><th title="縦断曲線長">VCL m</th><th title="次の点までの勾配">勾配</th><th></th></tr>${rows}</table>
+    <div class="row" style="margin-top:6px"><button class="btn" data-act="vip-add" title="最も長い区間の中央に変化点を追加（縦断図ではダブルクリックでも追加）">変化点を追加</button><button class="btn" data-act="vip-fit" title="勾配差に応じて、縦断曲線の半径・長さの規定を満たす曲線長に揃える">曲線長を推奨値に</button></div>
+    ${gr && (road.conn.start || road.conn.end) ? `<div class="row one"><button class="btn" data-act="vip-ends" title="接続している端点の計画高を現況地盤高（既存道路の路面高の近似）に合わせる">接続端を地盤高に合わせる</button></div>` : ''}
+    ${kv([['計画高', `${fmt(Math.min(...zs), 2)} 〜 ${fmt(Math.max(...zs), 2)} m`], ['最大縦断勾配', `${fmt(gmax, 2)} %（規定 ${t.grade}%・特例 ${t.gradeEx}%）`],
+    vp.cut || vp.fill ? ['最大切土 / 盛土', `${fmt(vp.cut ? vp.cut.d : 0, 2)} / ${fmt(vp.fill ? vp.fill.d : 0, 2)} m`] : null,
+    endTxt('start') ? ['起点 計画高−地盤高', endTxt('start')] : null, endTxt('end') ? ['終点 計画高−地盤高', endTxt('end')] : null])}
+    <div style="height:8px"></div>${groundBtn}
+    <div class="row"><button class="btn" data-act="vdock-toggle">${ui.vdock ? '縦断図を閉じる' : '縦断図を開く'}</button><button class="btn danger" data-act="vplan-del">縦断計画を削除</button></div>`;
+}
+
+/* 縦断図（SVG）。small: 右パネル用の簡易表示 */
+function profileSvg(road, W, H, o = {}) {
+  const al = calc(road), L = al.length, pf = Geom.computeProfile(road.vips, L), gr = ui.profiles.get(road.id), sm = !!o.small;
+  if (!(L > 0) || (!pf && !gr)) return '';
+  const pad = sm ? { l: 4, r: 4, t: 8, b: 6 } : { l: 52, r: 16, t: 18, b: 40 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  let rg = ui.vdrag && ui.vdrag.road === road.id ? ui.vdrag.range : null;
+  if (!rg) {
+    const zs = [];
+    if (gr) gr.pts.forEach((p) => zs.push(p.h));
+    if (pf) for (let k = 0; k <= 200; k++) zs.push(Geom.profileAt(pf, (L * k) / 200).z);
+    let lo = Math.min(...zs), hi = Math.max(...zs);
+    const span = Math.max(hi - lo, 2); lo -= span * 0.18; hi += span * 0.22;
+    rg = { lo, hi };
+  }
+  const X = (s) => pad.l + (s / L) * pw, Y = (z) => pad.t + ((rg.hi - z) / (rg.hi - rg.lo)) * ph, f = (v) => v.toFixed(1);
+  const pl = (pts) => pts.map((p, i) => `${i ? 'L' : 'M'}${f(p[0])},${f(p[1])}`).join('');
+  let out = '';
+  // 格子
+  if (!sm) {
+    const zStep = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200].find((d) => ((rg.hi - rg.lo) / d) * 24 <= ph) || 500;
+    for (let z = Math.ceil(rg.lo / zStep) * zStep; z <= rg.hi; z += zStep) out += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${f(Y(z))}" y2="${f(Y(z))}" class="g"/><text x="${pad.l - 6}" y="${f(Y(z) + 3)}" class="ax" text-anchor="end">${fmt(z, zStep < 1 ? 1 : 0)}</text>`;
+    const every = [1, 5, 10, 25, 50, 100].find((k) => (k * 20 * pw) / L >= 46) || 250;
+    for (let k = 0; k * 20 <= L + 1e-6; k++) {
+      const x = f(X(k * 20)), major = k % every === 0;
+      if (!major && (20 * pw) / L < 6) continue;
+      out += `<line x1="${x}" x2="${x}" y1="${pad.t}" y2="${H - pad.b}" class="${major ? 'g' : 'g2'}"/>`;
+      if (major) out += `<text x="${x}" y="${H - pad.b + 13}" class="ax" text-anchor="middle">No.${k}</text>`;
+    }
+    // 平面線形の帯
+    al.elements.forEach((e) => { out += `<rect x="${f(X(e.s0))}" y="${H - pad.b + 20}" width="${f(Math.max(0.5, (e.L / L) * pw))}" height="5" fill="${COLORS[e.type]}"/>`; });
+    out += `<text x="${pad.l - 6}" y="${H - pad.b + 25}" class="ax" text-anchor="end">平面</text>`;
+  }
+  // 現況地盤
+  if (gr) {
+    const g = gr.pts.map((p) => [X(p.s), Y(p.h)]);
+    out += `<path d="${pl(g)}L${f(g[g.length - 1][0])},${f(pad.t + ph)}L${f(g[0][0])},${f(pad.t + ph)}Z" class="gnd-f"/><path d="${pl(g)}" class="gnd"/>`;
+  }
+  if (pf) {
+    // 切土・盛土
+    if (gr) for (let k = 1; k < gr.pts.length; k++) {
+      const a = gr.pts[k - 1], b = gr.pts[k], za = Geom.profileAt(pf, a.s).z, zb = Geom.profileAt(pf, b.s).z;
+      out += `<path d="M${f(X(a.s))},${f(Y(za))}L${f(X(b.s))},${f(Y(zb))}L${f(X(b.s))},${f(Y(b.h))}L${f(X(a.s))},${f(Y(a.h))}Z" class="${za + zb - a.h - b.h >= 0 ? 'fill' : 'cut'}"/>`;
+    }
+    // 勾配線（接線）と計画線
+    out += `<path d="${pl(pf.pts.map((p) => [X(p.s), Y(p.z)]))}" class="tan"/>`;
+    const N = Math.max(50, Math.min(1500, Math.round(pw / 1.5))), plan = [];
+    for (let k = 0; k <= N; k++) { const s = (L * k) / N; plan.push([X(s), Y(Geom.profileAt(pf, s).z)]); }
+    out += `<path d="${pl(plan)}" class="plan"/>`;
+    pf.curves.forEach((c) => { if (c.L > 0) [c.bvc, c.evc].forEach((s) => { out += `<line x1="${f(X(s))}" x2="${f(X(s))}" y1="${f(Y(Geom.profileAt(pf, s).z) - 5)}" y2="${f(Y(Geom.profileAt(pf, s).z) + 5)}" class="vc"/>`; }); });
+    if (!sm) {
+      pf.grades.forEach((g, k) => {
+        const a = pf.pts[k], b = pf.pts[k + 1], xm = (X(a.s) + X(b.s)) / 2, ym = (Y(a.z) + Y(b.z)) / 2;
+        if (X(b.s) - X(a.s) > 54) out += `<text x="${f(xm)}" y="${f(ym - 7)}" class="gl${Math.abs(g) * 100 > Rules.T[road.V].grade + 1e-9 ? ' bad' : ''}" text-anchor="middle">${sgnPct(g)}　${fmt(b.s - a.s, 1)}m</text>`;
+      });
+    }
+    pf.pts.forEach((p, i) => {
+      const x = X(p.s), y = Y(p.z), nm = i === 0 ? 'BP' : i === pf.pts.length - 1 ? 'EP' : 'VIP' + i;
+      if (!sm) {
+        const c = pf.curves[i - 1], anc = i === 0 ? 'start' : i === pf.pts.length - 1 ? 'end' : 'middle';
+        out += `<text x="${f(x)}" y="${f(y - 12)}" class="vl" text-anchor="${anc}">${nm} ${fmt(p.z, 2)}</text>`;
+        if (c && c.L > 0) out += `<text x="${f(x)}" y="${f(y + 18)}" class="vl2" text-anchor="middle">VCL ${fmt(c.L, 0)} R ${isFinite(c.R) ? Math.round(c.R) : '—'}</text>`;
+      }
+      out += `<circle cx="${f(x)}" cy="${f(y)}" r="${sm ? 3 : 5.5}" class="vh${i === 0 || i === pf.pts.length - 1 ? ' end' : ''}" data-vip="${i}"><title>${nm}（ドラッグで移動。Shift で高さのみ）</title></circle>`;
+    });
+  }
+  if (!sm) out += `<g class="cur" visibility="hidden"><line y1="${pad.t}" y2="${H - pad.b}"/><text y="${pad.t + 10}" class="ax"></text></g>`;
+  const d = { road: road.id, len: L, w: W, h: H, pl: pad.l, pw, pt: pad.t, ph, lo: rg.lo, hi: rg.hi };
+  return `<svg class="vchart${sm ? ' sm' : ''}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${H}px" ${Object.entries(d).map(([k, v]) => `data-${k}="${v}"`).join(' ')}>${out}</svg>`;
+}
+
+/* 地図下部の縦断図 */
+function renderDock() {
+  const el = $('#vdock'), road = selRoad(), on = !!(ui.vdock && road && road.visible !== false && road.vips && road.vips.length >= 2);
+  if (el.hidden === on) { el.hidden = !on; $('#stage').classList.toggle('dock-on', on); map.invalidateSize({ pan: false }); }
+  if (!on) { el.innerHTML = ''; return; }
+  const W = Math.max(320, el.clientWidth), H = Math.max(140, el.clientHeight - 32);
+  el.innerHTML = `<div class="vd-head"><b>縦断図</b><span class="muted">${esc(road.name)}・延長 ${fmt(calc(road).length, 1)} m</span>
+    <span class="lg"><i class="l-plan"></i>計画高 <i class="l-gnd"></i>現況地盤 <i class="l-fill"></i>盛土 <i class="l-cut"></i>切土</span>
+    <span class="muted small vd-hint">● ドラッグで測点・計画高を変更（<kbd>Shift</kbd> 高さのみ）・ダブルクリックで変化点を追加</span>
+    ${ui.profiles.get(road.id) ? '' : '<button class="btn" data-act="profile">現況地盤を取得</button>'}<button class="btn" data-act="vip-add">変化点を追加</button><button class="ibtn" data-act="vdock-toggle" title="閉じる">✕</button></div>`
+    + profileSvg(road, W, H);
+}
+addEventListener('resize', () => renderDock());
 
 function ipBlock(road, al) {
   const i = ui.sel.ip, ip = road.ips[i], n = road.ips.length, ll = P.toLL(ip.x, ip.y);
@@ -177,7 +293,7 @@ function roadPanel(road) {
     + sec('平面線形', kv([['延長', `${fmt(al.length)} m`], ['IP 数（曲線）', `${road.ips.length - 2 < 0 ? 0 : al.curves.filter((x) => x && !x.none).length}`], ['最小曲線半径', (() => { const r = al.curves.filter((x) => x && !x.none).map((x) => x.R); return r.length ? fmt(Math.min(...r), 1) + ' m' : '—'; })()]])
       + (els ? `<table class="els" style="margin-top:8px"><tr><th>要素</th><th>起点 m</th><th>長さ m</th><th>諸元</th></tr>${els}</table>` : ''))
     + sec('既存道路との接続', connBlock(road, 'start', '起点', al) + connBlock(road, 'end', '終点', al))
-    + sec('縦断（現況地盤）', profileBlock(road));
+    + sec('縦断計画（計画高）', vplanBlock(road));
 }
 
 function checkPanel(road, res) {
@@ -187,7 +303,7 @@ function checkPanel(road, res) {
   return `<div class="chk-sum">${pill('error', '不適合')}${pill('warn', '要確認')}${pill('info', '参考')}${pill('ok', '適合')}</div>`
     + lv('error').map(item).join('') + lv('warn').map(item).join('') + lv('info').map(item).join('')
     + `<details class="okgrp"><summary>適合項目（${lv('ok').length}）</summary>${lv('ok').map(item).join('')}</details>`
-    + `<div class="note">道路構造令（本則の表）・建築基準法施行令および「道路構造令の解説と運用」の一般的な目安に基づく簡易照査です。道路管理者の条例・基準、特例値の適用条件、縦断線形・交差点詳細は別途確認してください。</div>`;
+    + `<div class="note">道路構造令（本則の表）・建築基準法施行令および「道路構造令の解説と運用」の一般的な目安に基づく簡易照査です。道路管理者の条例・基準、特例値の適用条件、交差点詳細は別途確認してください。</div>`;
 }
 
 function existingPanel() {
@@ -223,7 +339,7 @@ function renderChrome() {
   u.disabled = !hist.undo.length; r.disabled = !hist.redo.length;
   if (document.activeElement !== $('#projName')) $('#projName').value = project.name;
 }
-function renderPanels() { renderChrome(); renderLeft(); renderRight(); }
+function renderPanels() { renderChrome(); renderLeft(); renderRight(); renderDock(); }
 
 /* ───────── 値の変更 ───────── */
 function setValue(key, raw, live) {
@@ -231,7 +347,7 @@ function setValue(key, raw, live) {
   const ip = road && ui.sel.ip != null ? road.ips[ui.sel.ip] : null, im = project.image;
   const set = (o, k, val) => { if (val != null) o[k] = val; };
   const applyClass = (o) => { const c = Rules.CLASSES[o.cls]; if (![...c.V, ...c.Vex].includes(o.V)) o.V = c.V[c.V.length - 1]; o.laneW = c.lane; o.shoulderW = c.shoulder; o.lanes = c.single ? 1 : Math.max(2, o.lanes); };
-  switch (key) {
+  switch (key.startsWith('vip.') ? 'vip' : key) {
     case 'road.name': road.name = raw || '計画道路'; break;
     case 'road.cls': road.cls = raw; applyClass(road); break;
     case 'road.V': road.V = +raw; break;
@@ -257,6 +373,14 @@ function setValue(key, raw, live) {
     case 'conn.end.mode': road.conn.end.mode = raw; break;
     case 'conn.start.speed': if (v > 0) { road.conn.start.speed = v; road.conn.start.speedEst = false; } break;
     case 'conn.end.speed': if (v > 0) { road.conn.end.speed = v; road.conn.end.speedEst = false; } break;
+    case 'vip': {
+      const [, i, f] = key.split('.'), vp = road && road.vips && road.vips[+i];
+      if (!vp || !isFinite(v)) return;
+      if (f === 's') vp.s = Math.min(calc(road).length, Math.max(0, v));
+      else if (f === 'z') vp.z = v;
+      else if (f === 'VCL') vp.VCL = Math.max(0, v);
+      break;
+    }
     case 'img.w': set(im, 'w', pos(v, 1)); break;
     case 'img.rot': set(im, 'rot', isFinite(v) ? v : null); break;
     case 'img.cx': set(im, 'cx', isFinite(v) ? v : null); break;
@@ -274,7 +398,7 @@ function setValue(key, raw, live) {
     if (key.startsWith('ip.') || key.startsWith('conn.')) ui.profiles.delete(road.id);
   }
   if (key.startsWith('img.')) syncImageLayer();
-  if (live) renderMap();
+  if (live) { renderMap(); if (key.startsWith('vip.')) renderDock(); }
   else if (key.startsWith('def.') || key === 'base.opacity') { save(); renderPanels(); if (key.startsWith('def.')) updateHint(); }
   else commit();
 }
@@ -313,6 +437,61 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'backspace' && ui.tool === 'draw') { e.preventDefault(); ui.draw.ips.pop(); if (!ui.draw.ips.length) { ui.draw.startRef = null; ui.draw.cursor = null; } renderMap(); }
   else if (k === 'delete' || k === 'backspace') { const r = selRoad(); if (r && ui.sel.ip != null) act('ip-delete'); else if (r) act('del-road'); else if (ui.sel && ui.sel.type === 'existing') act('del-existing-piece'); }
 });
+
+/* 縦断図: ● のドラッグで変化点を移動、ダブルクリックで追加、ホバーで地図上の位置を表示 */
+function vchartAt(d, rect, e) {
+  const vx = ((e.clientX - rect.left) * d.w) / rect.width, vy = ((e.clientY - rect.top) * d.h) / rect.height;
+  return { s: ((vx - d.pl) / d.pw) * d.len, z: d.hi - ((vy - d.pt) / d.ph) * (d.hi - d.lo), vx };
+}
+const vchartData = (svg) => Object.fromEntries(Object.entries(svg.dataset).map(([k, v]) => [k, k === 'road' ? v : +v]));
+document.addEventListener('pointerdown', (e) => {
+  const h = e.target.closest && e.target.closest('svg.vchart [data-vip]'), road = selRoad();
+  if (!h || !road || !road.vips) return;
+  e.preventDefault(); e.stopPropagation();
+  const svg = h.ownerSVGElement, d = vchartData(svg), rect = svg.getBoundingClientRect(), i = +h.dataset.vip, n = road.vips.length, v = road.vips[i];
+  const p0 = vchartAt(d, rect, e), s0 = v.s, z0 = v.z;
+  let moved = false;
+  ui.vdrag = { road: road.id, range: { lo: d.lo, hi: d.hi } };
+  const mv = (ev) => {
+    if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 3) return;
+    moved = true;
+    const p = vchartAt(d, rect, ev);
+    v.z = r2(z0 + p.z - p0.z);
+    if (i > 0 && i < n - 1 && !ev.shiftKey) {
+      const L = calc(road).length, a = i > 0 ? road.vips[i - 1].s : 0, b = i < n - 2 ? road.vips[i + 1].s : L;
+      v.s = Math.round(Math.min(b - 1, Math.max(a + 1, s0 + p.s - p0.s)) * 10) / 10;
+    } else if (i > 0 && i < n - 1) v.s = s0;
+    schedulePanel();
+  };
+  const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); ui.vdrag = null; if (moved) commit(); else renderPanels(); };
+  addEventListener('pointermove', mv); addEventListener('pointerup', up);
+}, true);
+document.addEventListener('dblclick', (e) => {
+  const svg = e.target.closest && e.target.closest('svg.vchart'), road = selRoad();
+  if (!svg || !road || !road.vips || e.target.closest('[data-vip]')) return;
+  const d = vchartData(svg), p = vchartAt(d, svg.getBoundingClientRect(), e);
+  if (p.s <= 0 || p.s >= d.len) return;
+  const i = addVip(road, p.s); if (i) commit();
+});
+document.addEventListener('pointermove', (e) => {
+  const svg = e.target.closest && e.target.closest('svg.vchart'), road = selRoad();
+  if (!svg || !road || ui.vdrag) return;
+  const d = vchartData(svg), p = vchartAt(d, svg.getBoundingClientRect(), e), al = calc(road), s = Math.min(Math.max(p.s, 0), al.length);
+  const cur = svg.querySelector('.cur');
+  if (cur) {
+    const inside = p.s >= 0 && p.s <= d.len, x = d.pl + (s / d.len) * d.pw, pf = Geom.computeProfile(road.vips, al.length), h = groundAt(road, s);
+    cur.setAttribute('visibility', inside ? 'visible' : 'hidden');
+    const ln = cur.querySelector('line'), tx = cur.querySelector('text');
+    ln.setAttribute('x1', x); ln.setAttribute('x2', x);
+    tx.setAttribute('x', x > d.w - 220 ? x - 6 : x + 6); tx.setAttribute('text-anchor', x > d.w - 220 ? 'end' : 'start');
+    const z = pf ? Geom.profileAt(pf, s) : null;
+    tx.textContent = `${station(s)}` + (z ? `　計画高 ${fmt(z.z, 2)}m（${sgnPct(z.g)}）` : '') + (h != null ? `　地盤 ${fmt(h, 2)}m` : '') + (z && h != null ? `　${z.z >= h ? '盛' : '切'} ${fmt(Math.abs(z.z - h), 2)}m` : '');
+  }
+  const pose = Geom.poseAt(al, s);
+  gHover.clearLayers();
+  if (pose) L.circleMarker(P.toLL(pose.x, pose.y), { radius: 6, color: '#f24822', weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false, pane: 'labels' }).addTo(gHover);
+});
+document.addEventListener('pointerleave', (e) => { if (e.target.matches && e.target.matches('svg.vchart')) { gHover.clearLayers(); const c = e.target.querySelector('.cur'); if (c) c.setAttribute('visibility', 'hidden'); } }, true);
 
 /* ラベルのドラッグで数値を増減（スクラブ） */
 document.addEventListener('pointerdown', (e) => {
@@ -366,6 +545,20 @@ function act(a, el) {
     }
     case 'ip-recommend': fitCurve(road, ui.sel.ip); ui.profiles.delete(road.id); return commit();
     case 'profile': return loadProfile(road);
+    case 'vplan-ground': return createVplan(road, 'ground');
+    case 'vplan-flat': return createVplan(road, 'flat');
+    case 'vplan-del': if (confirm('この道路の計画縦断（縦断変化点）を削除しますか？')) { delete road.vips; ui.vdock = false; commit(); } return;
+    case 'vip-add': { const i = addVip(road); if (i) commit(); return; }
+    case 'vip-del': road.vips.splice(+el.dataset.i, 1); return commit();
+    case 'vip-fit': for (let i = 1; i < road.vips.length - 1; i++) fitVCL(road, i); return commit();
+    case 'vip-ends': {
+      const L = calc(road).length;
+      if (road.conn.start) road.vips[0].z = r2(groundAt(road, 0));
+      if (road.conn.end) road.vips[road.vips.length - 1].z = r2(groundAt(road, L));
+      return commit();
+    }
+    case 'vdock-toggle': ui.vdock = !ui.vdock; return renderPanels();
+    case 'vdock-open': ui.vdock = true; return renderPanels();
     case 'new': if (confirm('現在のプロジェクトを破棄して新規作成しますか？（必要なら先に書き出してください）')) { const keep = { base: project.base, googleKey: project.googleKey, view: project.view }; project = Object.assign(newProject(), keep); ui.sel = null; ui.imageUrl = null; idb.set('image', null).catch(() => {}); resetAll(); } return;
     case 'open': return $('#fileOpen').click();
     case 'menu-export': $('#exportMenu').hidden = !$('#exportMenu').hidden; return;
@@ -423,7 +616,8 @@ function toGeoJSON() {
   for (const r of project.roads) {
     const al = calc(r), hw = Rules.totalWidth(r) / 2, off = (d) => al.samples.map((p) => c({ x: p.x - Math.sin(p.th) * d, y: p.y + Math.cos(p.th) * d }));
     const base = { road: r.name, class: Rules.CLASSES[r.cls].name, designSpeed: r.V };
-    feats.push({ type: 'Feature', properties: { ...base, kind: 'centerline', length: +al.length.toFixed(3), width: Rules.totalWidth(r) }, geometry: { type: 'LineString', coordinates: al.samples.map(c) } });
+    const pf = Geom.computeProfile(r.vips, al.length), c3 = (p) => (pf ? [...c(p), +Geom.profileAt(pf, p.s).z.toFixed(3)] : c(p));
+    feats.push({ type: 'Feature', properties: { ...base, kind: 'centerline', length: +al.length.toFixed(3), width: Rules.totalWidth(r) }, geometry: { type: 'LineString', coordinates: al.samples.map(c3) } });
     if (al.samples.length > 1) feats.push({ type: 'Feature', properties: { ...base, kind: 'area' }, geometry: { type: 'Polygon', coordinates: [[...off(hw), ...off(-hw).reverse(), off(hw)[0]]] } });
     al.points.forEach((pt) => feats.push({ type: 'Feature', properties: { ...base, kind: 'point', name: pt.name, station: +pt.s.toFixed(3) }, geometry: { type: 'Point', coordinates: c(pt) } }));
     r.ips.forEach((ip, i) => feats.push({ type: 'Feature', properties: { ...base, kind: 'IP', index: i, R: ip.R || 0, A1: ip.A1 || 0, A2: ip.A2 || 0 }, geometry: { type: 'Point', coordinates: c(ip) } }));
@@ -441,6 +635,13 @@ function toCSV() {
     al.points.forEach((pt) => { const ll = P.toLL(pt.x, pt.y); rows.push([pt.name, q(station(pt.s)), fmt(pt.s, 3), fmt(pt.x, 3), fmt(pt.y, 3), ll.lat.toFixed(8), ll.lng.toFixed(8), fmt(azimuth(pt.th), 4)]); });
     rows.push(['[要素]', '種別', '起点追加距離(m)', '長さ(m)', 'R(m)', 'A']);
     al.elements.forEach((e, i) => rows.push([i + 1, ELNAME[e.type], fmt(e.s0, 3), fmt(e.L, 3), e.R ? fmt(e.R, 3) : '', e.A ? fmt(e.A, 3) : '']));
+    if (r.vips && r.vips.length >= 2) {
+      const pf = Geom.computeProfile(r.vips, al.length);
+      rows.push(['[縦断変化点]', '追加距離(m)', '計画高(m)', '縦断曲線長VCL(m)', '前勾配(%)', '後勾配(%)', '縦断曲線半径(m)', '種別']);
+      pf.pts.forEach((p, i) => { const cv = pf.curves[i - 1]; rows.push([i === 0 ? 'BP' : i === pf.pts.length - 1 ? 'EP' : 'VIP' + i, fmt(p.s, 3), fmt(p.z, 3), cv ? fmt(cv.L, 3) : '', i > 0 ? fmt(pf.grades[i - 1] * 100, 3) : '', i < pf.pts.length - 1 ? fmt(pf.grades[i] * 100, 3) : '', cv && isFinite(cv.R) ? fmt(cv.R, 1) : '', cv && cv.L > 0 && Math.abs(cv.dg) > 0.0005 ? (cv.crest ? '凸形' : '凹形') : '']); });
+      rows.push(['[縦断計算]', '測点', '追加距離(m)', '計画高(m)', '勾配(%)', '地盤高(m)', '切盛(m) +盛/-切']);
+      vplanRows(r).forEach((x) => rows.push([q(x.name), q(x.station), fmt(x.s, 3), fmt(x.z, 3), fmt(x.g * 100, 3), x.h == null ? '' : fmt(x.h, 3), x.d == null ? '' : fmt(x.d, 3)]));
+    }
     rows.push(['[照査]', '判定', '項目', '内容', '根拠']);
     checksOf(r).forEach((c) => rows.push(['', { error: '不適合', warn: '要確認', info: '参考', ok: '適合' }[c.level], q(c.title), q(c.detail), q(c.ref)]));
     rows.push([]);
@@ -449,11 +650,12 @@ function toCSV() {
 }
 function toDXF() {
   let s = '0\nSECTION\n2\nENTITIES\n';
-  const pl = (layer, pts, closed) => { s += `0\nPOLYLINE\n8\n${layer}\n66\n1\n70\n${closed ? 1 : 0}\n`; pts.forEach((p) => { s += `0\nVERTEX\n8\n${layer}\n10\n${p.x.toFixed(4)}\n20\n${p.y.toFixed(4)}\n30\n0.0\n`; }); s += '0\nSEQEND\n'; };
+  const pl = (layer, pts, closed, zf) => { s += `0\nPOLYLINE\n8\n${layer}\n66\n1\n70\n${(closed ? 1 : 0) | (zf ? 8 : 0)}\n`; pts.forEach((p) => { s += `0\nVERTEX\n8\n${layer}\n10\n${p.x.toFixed(4)}\n20\n${p.y.toFixed(4)}\n30\n${zf ? zf(p).toFixed(4) : '0.0'}\n${zf ? '70\n32\n' : ''}`; }); s += '0\nSEQEND\n'; };
   for (const r of project.roads) {
     const al = calc(r), off = (d) => al.samples.map((p) => ({ x: p.x - Math.sin(p.th) * d, y: p.y + Math.cos(p.th) * d }));
     const hw = Rules.carriage(r) / 2, sh = hw + r.shoulderW, sw = sh + r.sidewalkW;
-    pl('CENTER', al.samples); pl('IP', r.ips);
+    const pf = Geom.computeProfile(r.vips, al.length);
+    pl('CENTER', al.samples, false, pf ? (p) => Geom.profileAt(pf, p.s).z : null); pl('IP', r.ips);
     [hw, -hw].forEach((d) => pl('LANE_EDGE', off(d)));
     if (r.shoulderW > 0) [sh, -sh].forEach((d) => pl('SHOULDER', off(d)));
     if (r.sidewalkW > 0) [sw, -sw].forEach((d) => pl('SIDEWALK', off(d)));
@@ -475,8 +677,13 @@ function showHelp() {
     <h4>線形要素</h4><ul>
       <li><span class="tag line"></span>直線 <span class="tag clothoid"></span>クロソイド（A² = R·L） <span class="tag arc"></span>円曲線。主要点は BP / KA / KE / BC / EC / EP、測点は 20m ピッチ（No.）。</li>
       <li>A1・A2 を別々に指定する非対称クロソイド、A=0 で単円にも対応。</li></ul>
+    <h4>縦断計画（計画高）</h4><ul>
+      <li>右パネル「縦断計画（計画高）」で <b>現況地盤に沿う案</b> または <b>両端を結ぶ</b> を押すと、地理院 DEM の地盤高をもとに計画縦断を作成し、地図の下に縦断図が開きます。</li>
+      <li>縦断変化点（VIP）の測点・計画高・縦断曲線長（VCL）を表で入力するか、縦断図の ● をドラッグして盛土・切土の高さを決めます（<kbd>Shift</kbd> で高さのみ。ダブルクリックで変化点を追加）。</li>
+      <li>縦断曲線は VIP を中心とする 2 次放物線。「曲線長を推奨値に」で縦断曲線の半径・長さの規定を満たす長さに揃えます。</li>
+      <li>縦断図には計画高（赤）・現況地盤（青）・盛土（黄）・切土（茶）を表示。地図上で道路にカーソルを置くと、その測点の計画高と切盛高がステータスに出ます。</li></ul>
     <h4>照査</h4><ul>
-      <li>道路構造令: 設計速度(13条)・幅員(5,8,11条)・最小曲線半径(15条)・曲線長／片勾配(16条)・緩和区間(18条)・視距(19条)・縦断勾配(20条)・交差角(27条)。</li>
+      <li>道路構造令: 設計速度(13条)・幅員(5,8,11条)・最小曲線半径(15条)・曲線長／片勾配(16条)・緩和区間(18条)・視距(19条)・縦断勾配(20条)・縦断曲線(22条)・合成勾配(25条)・交差角(27条)。</li>
       <li>接続部: 既存道路の速度から最初の曲線までの減速距離（進入速度）を確認。</li>
       <li>位置指定道路（建築基準法施行令 第144条の4）: 幅員 4m・袋路 35m・隅切り・勾配 12%。</li>
       <li>結果は簡易照査です。最終判断は条文・道路管理者の基準で行ってください。</li></ul>

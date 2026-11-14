@@ -258,7 +258,64 @@
     return out;
   }
 
-  const G = { wrap, evalSeg, spiral, curveAt, computeAlignment, sampleElement, sample, poseAt, project, polyLen, polyLenTo, polyBreaks, polyNearest, pieceAt, polySlice };
+  /* ───────── 縦断線形（VIP 法：勾配直線 + 2次放物線の縦断曲線） ─────────
+   * vips: [{ s: 追加距離 m, z: 計画高 m, VCL: 縦断曲線長 m }]（先頭=BP・末尾=EP、s は length に合わせる）
+   * 勾配 g は小数（0.05 = 5%）。縦断曲線は VIP を中心とする対称放物線。 */
+  function computeProfile(vips, length) {
+    if (!vips || vips.length < 2 || !(length > 0)) return null;
+    const n = vips.length, pts = vips.map((v) => ({ s: +v.s || 0, z: +v.z || 0, VCL: Math.max(0, +v.VCL || 0) }));
+    pts[0].s = 0; pts[n - 1].s = length; pts[0].VCL = 0; pts[n - 1].VCL = 0;
+    for (let i = 1; i < n - 1; i++) pts[i].s = Math.min(length, Math.max(0, pts[i].s));
+    const issues = [], grades = [];
+    for (let i = 0; i < n - 1; i++) {
+      const ds = pts[i + 1].s - pts[i].s;
+      if (ds <= 1e-6) { issues.push({ type: 'order', i: i + 1 }); grades.push(0); } else grades.push((pts[i + 1].z - pts[i].z) / ds);
+    }
+    const curves = [];
+    for (let i = 1; i < n - 1; i++) {
+      const p = pts[i], g1 = grades[i - 1], g2 = grades[i], L = p.VCL, dg = g2 - g1;
+      curves.push({ i, s: p.s, z: p.z, g1, g2, dg, L, bvc: p.s - L / 2, evc: p.s + L / 2, R: L > 0 && Math.abs(dg) > 1e-9 ? L / Math.abs(dg) : Infinity, crest: dg < 0 });
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const ds = pts[i + 1].s - pts[i].s, need = pts[i].VCL / 2 + pts[i + 1].VCL / 2;
+      if (ds > 1e-6 && need > ds + 1e-6) issues.push({ type: 'overlap', i, amount: need - ds });
+    }
+    return { pts, grades, curves, issues, length };
+  }
+  /* 追加距離 s の計画高 z と勾配 g */
+  function profileAt(pf, s) {
+    const pts = pf.pts, n = pts.length;
+    s = Math.min(Math.max(s, 0), pf.length);
+    for (const c of pf.curves) {
+      if (c.L > 0 && s >= c.bvc && s <= c.evc) {
+        const u = s - c.bvc;
+        return { z: c.z + c.g1 * (s - c.s) + (c.dg / (2 * c.L)) * u * u, g: c.g1 + (c.dg * u) / c.L, vc: c.i };
+      }
+    }
+    let k = n - 2;
+    for (let i = 0; i < n - 1; i++) if (s <= pts[i + 1].s) { k = i; break; }
+    return { z: pts[k].z + pf.grades[k] * (s - pts[k].s), g: pf.grades[k], vc: null };
+  }
+  /* 区間 [s0, s1] の最大勾配（絶対値） */
+  function maxGradeIn(pf, s0, s1) {
+    // 縦断曲線内の勾配は両側の勾配の間で単調に変わるので、勾配直線部と区間両端だけを見ればよい
+    let m = Math.max(Math.abs(profileAt(pf, s0).g), Math.abs(profileAt(pf, s1).g));
+    const pts = pf.pts;
+    for (let k = 0; k < pts.length - 1; k++) {
+      const a = pts[k].s + pts[k].VCL / 2, b = pts[k + 1].s - pts[k + 1].VCL / 2;
+      if (b >= a && b >= s0 && a <= s1) m = Math.max(m, Math.abs(pf.grades[k]));
+    }
+    return m;
+  }
+  /* 点列 [{s, h}] の線形補間 */
+  function interpProfile(pts, s) {
+    if (!pts || !pts.length) return null;
+    if (s <= pts[0].s) return pts[0].h;
+    for (let i = 1; i < pts.length; i++) if (s <= pts[i].s) { const a = pts[i - 1], b = pts[i], t = b.s > a.s ? (s - a.s) / (b.s - a.s) : 0; return a.h + (b.h - a.h) * t; }
+    return pts[pts.length - 1].h;
+  }
+
+  const G = { wrap, evalSeg, spiral, curveAt, computeAlignment, sampleElement, sample, poseAt, project, polyLen, polyLenTo, polyBreaks, polyNearest, pieceAt, polySlice, computeProfile, profileAt, maxGradeIn, interpProfile };
   if (typeof module !== 'undefined' && module.exports) module.exports = G;
   else root.Geom = G;
 })(typeof self !== 'undefined' ? self : this);
