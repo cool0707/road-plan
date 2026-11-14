@@ -16,7 +16,7 @@ const LS_KEY = 'roadplan.project.v1';
 function newProject() {
   return {
     version: 1, name: '無題の道路計画', origin: null, roads: [], existing: [], image: null,
-    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, view: null, googleKey: '',
+    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, view: null, googleKey: '',
     defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false },
   };
 }
@@ -235,12 +235,79 @@ function gsiToEx(f, id, coords) {
     width: GSI_W[p.rnkWidth] || 5, widthNote: p.rnkWidth ? `幅員区分 ${p.rnkWidth}` : '不明（仮定値）', lanes: null, speed: sp, speedEst: true, oneway: false, surface: '', pts, bbox: bboxOf(pts),
   };
 }
+/* 重複判定: 既存線の近傍（tol m 以内・ほぼ平行）に cover 以上が収まる線は重複とみなす */
+const DUP_TOL = 6, DUP_COVER = 0.85, DUP_CELL = 20;
+function dupIndex() {
+  const cells = new Map();
+  const key = (i, j) => i + ',' + j;
+  return {
+    add(xy) {
+      for (let k = 1; k < xy.length; k++) {
+        const a = xy[k - 1], b = xy[k], seg = [a.x, a.y, b.x, b.y];
+        const i0 = Math.floor((Math.min(a.x, b.x) - DUP_TOL) / DUP_CELL), i1 = Math.floor((Math.max(a.x, b.x) + DUP_TOL) / DUP_CELL);
+        const j0 = Math.floor((Math.min(a.y, b.y) - DUP_TOL) / DUP_CELL), j1 = Math.floor((Math.max(a.y, b.y) + DUP_TOL) / DUP_CELL);
+        for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) { const c = key(i, j); if (!cells.has(c)) cells.set(c, []); cells.get(c).push(seg); }
+      }
+    },
+    near(x, y, dx, dy) { // (x,y) 付近に方向 (dx,dy) とほぼ平行な線分があるか
+      const segs = cells.get(key(Math.floor(x / DUP_CELL), Math.floor(y / DUP_CELL)));
+      if (!segs) return false;
+      for (const [ax, ay, bx, by] of segs) {
+        const vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy;
+        if (!l2) continue;
+        if (Math.abs(vx * dy - vy * dx) > 0.5 * Math.sqrt(l2)) continue; // 30° 以上の交差は別の道路
+        const t = Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / l2));
+        if (Math.hypot(x - ax - vx * t, y - ay - vy * t) <= DUP_TOL) return true;
+      }
+      return false;
+    },
+  };
+}
+function isDup(xy, idx) {
+  let tot = 0, hit = 0;
+  for (let k = 1; k < xy.length; k++) {
+    const a = xy[k - 1], b = xy[k], l = Math.hypot(b.x - a.x, b.y - a.y);
+    if (!l) continue;
+    const n = Math.max(1, Math.ceil(l / 3)), dx = (b.x - a.x) / l, dy = (b.y - a.y) / l;
+    for (let s = 0; s < n; s++) { const t = (s + 0.5) / n; tot++; if (idx.near(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, dx, dy)) hit++; }
+  }
+  return tot > 0 && hit / tot >= DUP_COVER;
+}
+const exLen = (xy) => { let l = 0; for (let k = 1; k < xy.length; k++) l += Math.hypot(xy[k].x - xy[k - 1].x, xy[k].y - xy[k - 1].y); return l; };
 function addExisting(list) {
   const m = new Map(project.existing.map((e) => [e.id, e]));
-  list.forEach((e) => { if (e.pts.length > 1) m.set(e.id, e); });
+  const fresh = [];
+  list.forEach((e) => { if (e.pts.length < 2) return; if (m.has(e.id)) m.set(e.id, e); else fresh.push(e); }); // 同じ ID は更新
+  const idx = dupIndex();
+  for (const e of m.values()) idx.add(e.pts.map((p) => P.toXY(p)));
+  let skipped = 0;
+  fresh.map((e) => ({ e, xy: e.pts.map((p) => P.toXY(p)) })).sort((a, b) => exLen(b.xy) - exLen(a.xy)).forEach(({ e, xy }) => {
+    if (isDup(xy, idx)) { skipped++; return; }
+    idx.add(xy); m.set(e.id, e);
+  });
   project.existing = [...m.values()]; project.existingVisible = true;
   save(); renderExisting(); renderPanels();
+  return { added: list.length - skipped, skipped };
 }
+function dedupeExisting() {
+  const idx = dupIndex(), keep = [];
+  project.existing.map((e) => ({ e, xy: e.pts.map((p) => P.toXY(p)) })).sort((a, b) => exLen(b.xy) - exLen(a.xy)).forEach(({ e, xy }) => {
+    if (isDup(xy, idx)) return;
+    idx.add(xy); keep.push(e);
+  });
+  const n = project.existing.length - keep.length;
+  const ids = new Set(keep.map((e) => e.id));
+  project.existing = project.existing.filter((e) => ids.has(e.id));
+  if (ui.sel && ui.sel.type === 'existing' && !ids.has(ui.sel.id)) ui.sel = null;
+  save(); renderExisting(); refresh();
+  toast(n ? `重複していた既存道路 ${n} 本を除去しました` : '重複している既存道路はありません');
+}
+function deleteExisting(id) {
+  project.existing = project.existing.filter((e) => e.id !== id);
+  if (ui.sel && ui.sel.type === 'existing' && ui.sel.id === id) ui.sel = null;
+  save(); renderExisting(); refresh();
+}
+const dupMsg = (r) => (r.skipped ? `（重複 ${r.skipped} 本は除外）` : '');
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 async function fetchOSM() {
   if (map.getZoom() < 14) return toast('表示範囲が広すぎます。ズーム 14 以上に拡大してください', 'err');
@@ -254,8 +321,8 @@ async function fetchOSM() {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
       const list = j.elements.filter((e) => e.type === 'way' && e.geometry).map(osmToEx);
-      addExisting(list);
-      return toast(`既存道路 ${list.length} 本を取得しました（© OpenStreetMap contributors）`);
+      const res = addExisting(list);
+      return toast(`既存道路 ${res.added} 本を取得しました${dupMsg(res)}（© OpenStreetMap contributors）`);
     } catch (e) { last = e; }
   }
   toast('既存道路の取得に失敗しました: ' + (last && last.message), 'err');
@@ -284,18 +351,25 @@ async function fetchGSI() {
     } catch (e) { /* タイル欠損は無視 */ }
   }));
   if (!okCount) return toast('地理院 道路中心線タイルを取得できませんでした', 'err');
-  addExisting(list);
-  toast(`道路中心線 ${list.length} 本を取得しました（国土地理院ベクトルタイル提供実験）`);
+  const res = addExisting(list);
+  toast(`道路中心線 ${res.added} 本を取得しました${dupMsg(res)}（国土地理院ベクトルタイル提供実験）`);
 }
 function renderExisting() {
   gExisting.clearLayers();
   if (!project.existingVisible) return;
   const selId = ui.sel && ui.sel.type === 'existing' ? ui.sel.id : null;
+  const wide = project.existingWidth, ppm = wide ? pxPerM() : 0;
   for (const ex of project.existing) {
     const on = ex.id === selId;
-    L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0f9d8f', weight: on ? 6 : 3, opacity: on ? 0.95 : 0.7 })
-      .on('click', (e) => { if (ui.tool !== 'select') return; L.DomEvent.stopPropagation(e); select({ type: 'existing', id: ex.id, at: [e.latlng.lat, e.latlng.lng] }); })
-      .addTo(gExisting);
+    const click = (e) => { if (ui.tool !== 'select') return; L.DomEvent.stopPropagation(e); select({ type: 'existing', id: ex.id, at: [e.latlng.lat, e.latlng.lng] }); };
+    if (wide) { // 幅員どおりの帯 + 中心線
+      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0f9d8f', weight: Math.max(3, ex.width * ppm), opacity: on ? 0.45 : 0.3, lineCap: 'butt', lineJoin: 'round' })
+        .on('click', click).addTo(gExisting);
+      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0b7a6f', weight: on ? 2 : 1, opacity: 0.9, dashArray: '6 4', interactive: false }).addTo(gExisting);
+    } else {
+      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0f9d8f', weight: on ? 6 : 3, opacity: on ? 0.95 : 0.7 })
+        .on('click', click).addTo(gExisting);
+    }
   }
 }
 function existingInfo(ex, at) {
@@ -591,7 +665,7 @@ map.on('mousemove', (e) => {
     }
   });
 });
-map.on('zoomend', () => { if (!ui.dragging) renderMap(); });
+map.on('zoomend', () => { if (project.existingWidth) renderExisting(); if (!ui.dragging) renderMap(); });
 map.on('moveend', () => save());
 
 function select(sel) {
