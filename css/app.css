@@ -194,3 +194,16 @@ img.rot-image { position: absolute; left: 0; top: 0; transform-origin: 0 0; poin
   #print tr { break-inside: avoid; }
   #print .lv { font-weight: 700; } #print .lv.error { color: #d32f0e; } #print .lv.warn { color: #b77f00; } #print .lv.info { color: #5b45d6; } #print .lv.ok { color: #0e8a48; }
 }
+
+/* 幅員・車線数カード */
+.wsec { background: #fafbfc; }
+.wsec > h3 { font-size: 12px; }
+.wtot { font-weight: 500; color: var(--text2); } .wtot b { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.lanes-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.lanes-row .lb { color: var(--text2); font-size: 10.5px; width: 40px; }
+.lanes-row .lnum { font-size: 16px; min-width: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.stp { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--line); background: #fff; font-size: 13px; font-weight: 600; }
+.stp:hover { background: var(--bg2); } .stp:disabled { color: var(--text3); cursor: default; background: #fff; }
+.layer .wd { color: var(--text2); font-size: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pt-label.wd { background: #fff; color: #1e1e1e; padding: 3px 6px; border-radius: 5px; border: 1px solid #3f4a5a; text-shadow: none; font-weight: 600; }
+#hint .hint-sub { margin-top: 3px; color: #cfd6df; font-size: 11px; } #hint .hint-sub b { color: #fff; }

@@ -30,7 +30,7 @@ function renderLeft() {
   const roads = project.roads.map((r) => {
     const c = counts(r), on = ui.sel && ui.sel.type === 'road' && ui.sel.id === r.id;
     const badge = c.error ? `<span class="badge error">${c.error}</span>` : c.warn ? `<span class="badge warn">${c.warn}</span>` : '<span class="badge ok">✓</span>';
-    return `<div class="layer${on ? ' sel' : ''}" data-act="sel-road" data-id="${r.id}"><span class="dot" style="background:#3f4a5a"></span><span class="nm">${esc(r.name)}</span>${badge}<button class="ibtn${r.visible === false ? ' off' : ''}" data-act="vis-road" data-id="${r.id}" title="表示切替">${ic(r.visible === false ? 'eyeoff' : 'eye')}</button></div>`;
+    return `<div class="layer${on ? ' sel' : ''}" data-act="sel-road" data-id="${r.id}"><span class="dot" style="background:#3f4a5a"></span><span class="nm">${esc(r.name)}</span><span class="wd" title="車線数・全幅">${xsecShort(r)}</span>${badge}<button class="ibtn${r.visible === false ? ' off' : ''}" data-act="vis-road" data-id="${r.id}" title="表示切替">${ic(r.visible === false ? 'eyeoff' : 'eye')}</button></div>`;
   }).join('');
   const im = project.image;
   $('#left').innerHTML = `
@@ -88,10 +88,20 @@ function emptyPanel() {
       <li>既存道路の近くでは緑の丸に吸着して接続</li>
       <li>IP を選択して R・クロソイド A を調整</li>
       <li><b>照査</b> タブで法規適合を確認</li></ol>`)
-    + sec('新規道路の既定値', `<div class="row one">${sel('区分', 'def.cls', d.cls, Object.entries(Rules.CLASSES).map(([k, c]) => [k, c.name]))}</div>
-      <div class="row">${sel('設計速度', 'def.V', d.V, Rules.SPEEDS.map((v) => [v, v + ' km/h']))}${num('車線数', 'def.lanes', d.lanes, { dec: 0 })}</div>
-      <div class="muted small">次に描く道路に適用されます。</div>`)
+    + widthSec(d, 'def', '次に描く道路の幅員・車線', `<div class="row one">${sel('区分', 'def.cls', d.cls, Object.entries(Rules.CLASSES).map(([k, c]) => [k, c.name]))}</div>
+      <div class="row one">${sel('設計速度', 'def.V', d.V, Rules.SPEEDS.map((v) => [v, v + ' km/h']))}</div>`, '<div class="muted small">ここで決めた値で次の道路が描かれます。描いた後も道路を選択すれば右パネルの一番上で変更できます。</div>')
     + `<div class="note">線形の色: <span class="tag line"></span>直線 <span class="tag clothoid"></span>クロソイド <span class="tag arc"></span>円曲線</div>`;
+}
+
+const xsecShort = (r) => `${r.lanes}車線・${fmt(Rules.totalWidth(r), 1)}m`;
+
+/* 幅員・車線数カード（道路パネル最上部／既定値） */
+function widthSec(o, pre, title, head = '', foot = '') {
+  const step = (d) => `<button class="stp" data-act="lanes-step" data-pre="${pre}" data-d="${d}" title="車線数を${d > 0 ? '増やす' : '減らす'}"${(d < 0 ? o.lanes <= 1 : o.lanes >= 8) ? ' disabled' : ''}>${d > 0 ? '＋' : '−'}</button>`;
+  return `<section class="sec wsec"><h3><span>${title}</span><span class="wtot">全幅 <b>${fmt(Rules.totalWidth(o), 2)}</b> m</span></h3>${head}
+    <div class="lanes-row"><span class="lb">車線数</span>${step(-1)}<b class="lnum">${o.lanes}</b>${step(1)}<span class="muted">車線（車道 ${fmt(Rules.carriage(o), 2)} m）</span></div>
+    <div class="row three">${num('車線幅', pre + '.laneW', o.laneW, { unit: 'm', step: 0.25, title: '1 車線あたりの幅員' })}${num('路肩', pre + '.shoulderW', o.shoulderW, { unit: 'm', step: 0.25, title: '片側あたりの路肩幅員（両側に設置）' })}${num('歩道', pre + '.sidewalkW', o.sidewalkW, { unit: 'm', step: 0.5, title: '片側あたりの歩道幅員（両側に設置。0 でなし）' })}</div>
+    ${xsecSvg(o)}${foot}</section>`;
 }
 
 function xsecSvg(road) {
@@ -157,14 +167,13 @@ function roadPanel(road) {
   const al = calc(road), c = Rules.CLASSES[road.cls];
   const speedOpts = Rules.SPEEDS.map((v) => [v, `${v} km/h${c.V.includes(v) ? '' : c.Vex.includes(v) ? '（特例）' : '（規定外）'}`]);
   const els = al.elements.map((e, i) => `<tr data-el="${i}"><td><span class="tag ${e.type}"></span>${ELNAME[e.type]}</td><td>${fmt(e.s0, 1)}</td><td>${fmt(e.L, 2)}</td><td>${e.type === 'arc' ? 'R ' + fmt(e.R, 1) : e.type === 'clothoid' ? 'A ' + fmt(e.A, 1) : fmt(azimuth(e.th0), 1) + '°'}</td></tr>`).join('');
-  return (ui.sel.ip != null ? ipBlock(road, al) : '')
+  return widthSec(road, 'road', '幅員・車線数')
+    + (ui.sel.ip != null ? ipBlock(road, al) : '')
     + sec('道路', `<div class="row one"><label class="fld"><span class="lb">名称</span><input type="text" data-key="road.name" value="${esc(road.name)}"></label></div>
       <div class="row one">${sel('区分', 'road.cls', road.cls, Object.entries(Rules.CLASSES).map(([k, v]) => [k, v.name]))}</div>
       <div class="row one">${sel('設計速度', 'road.V', road.V, speedOpts)}</div>
       <label class="chk" title="建築基準法 第42条第1項第5号（位置指定道路）の基準もあわせて照査"><input type="checkbox" data-key="road.shitei"${road.shitei ? ' checked' : ''}>位置指定道路の基準も照査</label>`,
       `<button class="ibtn" data-act="zoom-road" title="全体を表示">${ic('target')}</button><button class="ibtn" data-act="del-road" title="道路を削除">${ic('trash')}</button>`)
-    + sec('横断構成', `<div class="row">${num('車線数', 'road.lanes', road.lanes, { dec: 0 })}${num('車線幅', 'road.laneW', road.laneW, { unit: 'm', step: 0.25 })}</div>
-      <div class="row">${num('路肩', 'road.shoulderW', road.shoulderW, { unit: 'm', step: 0.25 })}${num('歩道', 'road.sidewalkW', road.sidewalkW, { unit: 'm', step: 0.5, title: '片側あたりの歩道幅員（両側に設置。0 でなし）' })}</div>${xsecSvg(road)}`)
     + sec('平面線形', kv([['延長', `${fmt(al.length)} m`], ['IP 数（曲線）', `${road.ips.length - 2 < 0 ? 0 : al.curves.filter((x) => x && !x.none).length}`], ['最小曲線半径', (() => { const r = al.curves.filter((x) => x && !x.none).map((x) => x.R); return r.length ? fmt(Math.min(...r), 1) + ' m' : '—'; })()]])
       + (els ? `<table class="els" style="margin-top:8px"><tr><th>要素</th><th>起点 m</th><th>長さ m</th><th>諸元</th></tr>${els}</table>` : ''))
     + sec('既存道路との接続', connBlock(road, 'start', '起点', al) + connBlock(road, 'end', '終点', al))
@@ -234,6 +243,9 @@ function setValue(key, raw, live) {
     case 'def.cls': project.defaults.cls = raw; applyClass(project.defaults); break;
     case 'def.V': project.defaults.V = +raw; break;
     case 'def.lanes': set(project.defaults, 'lanes', isFinite(v) ? Math.max(1, Math.min(8, Math.round(v))) : null); break;
+    case 'def.laneW': set(project.defaults, 'laneW', pos(v, 2)); break;
+    case 'def.shoulderW': set(project.defaults, 'shoulderW', pos(v)); break;
+    case 'def.sidewalkW': set(project.defaults, 'sidewalkW', pos(v)); break;
     case 'ip.x': set(ip, 'x', isFinite(v) ? v : null); break;
     case 'ip.y': set(ip, 'y', isFinite(v) ? v : null); break;
     case 'ip.R': set(ip, 'R', pos(v)); break;
@@ -263,7 +275,7 @@ function setValue(key, raw, live) {
   }
   if (key.startsWith('img.')) syncImageLayer();
   if (live) renderMap();
-  else if (key.startsWith('def.') || key === 'base.opacity') { save(); renderPanels(); }
+  else if (key.startsWith('def.') || key === 'base.opacity') { save(); renderPanels(); if (key.startsWith('def.')) updateHint(); }
   else commit();
 }
 
@@ -340,6 +352,7 @@ function act(a, el) {
     case 'img-scale': ui.tool = 'pick'; ui.pick = []; setTool('pick'); ui.pick = []; return;
     case 'sel-road': ui.tab = ui.tab || 'design'; return select({ type: 'road', id });
     case 'vis-road': { const r = roadById(id); r.visible = r.visible === false; return commit(); }
+    case 'lanes-step': { const o = el.dataset.pre === 'def' ? project.defaults : road; if (o) setValue(el.dataset.pre + '.lanes', String(o.lanes + +el.dataset.d)); return; }
     case 'tab-design': ui.tab = 'design'; return renderPanels();
     case 'tab-check': ui.tab = 'check'; return renderPanels();
     case 'zoom-road': { const al = calc(road); if (al.samples.length) map.fitBounds(L.latLngBounds(al.samples.map((p) => P.toLL(p.x, p.y))).pad(0.25)); return; }
@@ -452,6 +465,7 @@ function showHelp() {
   $('#modal .modal-card').innerHTML = `<h2>Road Plan の使い方</h2>
     <h4>基本操作</h4><ul>
       <li><kbd>P</kbd> 道路を描く: 地図をクリックして IP（交点）を順に置く。<kbd>ダブルクリック</kbd> / <kbd>Enter</kbd> で確定。設計速度に応じたクロソイド＋円曲線が自動で入ります。</li>
+      <li><b>幅員・車線数</b>: 道路を選択すると右パネルの一番上に表示（<b>−／＋</b> で車線数、車線幅・路肩・歩道を入力）。何も選択していないときは次に描く道路の既定値を設定できます。</li>
       <li>既存道路（緑の線）は左パネルで「中心線」/「幅員どおり」の表示を切替。クリックすると交差点・屈曲点で区切られた区間が選択され、<kbd>Delete</kbd> でその区間だけを削除（パネルから道路全体も削除可）。OSM と地理院を両方取得しても重なる線は自動で除外されます（既存データは「重複を除去」）。</li>
       <li>既存道路（緑の線）や他の計画道路の近くでは緑の丸に吸着し、そこに<b>接続</b>します。接続後は右パネルで「交差・T字」か「延伸（接線方向に拘束）」を選べます。</li>
       <li><kbd>V</kbd> 選択: 道路をクリック → IP ハンドルをドラッグ。線上の小さな丸をクリックすると IP を追加。<kbd>Delete</kbd> で削除。</li>
