@@ -83,7 +83,7 @@ function renderRight() {
 function emptyPanel() {
   const d = project.defaults;
   return sec('はじめに', `<ol style="margin:0;padding-left:18px;line-height:1.8">
-      <li>左の <b>OSM から取得</b> で既存道路を読み込む</li>
+      <li>左の <b>OSM から取得</b> または <b>地理院から取得</b> で既存道路を読み込む</li>
       <li>下のツールバーの <b>道路を描く</b>（<kbd>P</kbd>）で IP をクリック</li>
       <li>既存道路の近くでは緑の丸に吸着して接続</li>
       <li>IP を選択して R・クロソイド A を調整</li>

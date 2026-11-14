@@ -344,19 +344,20 @@ async function fetchOSM() {
   if (map.getZoom() < 14) return toast('表示範囲が広すぎます。ズーム 14 以上に拡大してください', 'err');
   const b = map.getBounds();
   const q = `[out:json][timeout:25];way["highway"]["highway"!~"^(footway|path|steps|cycleway|pedestrian|construction|proposed|corridor|platform|elevator|bridleway|bus_guideway|raceway|rest_area|services)$"]["area"!="yes"](${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()});out tags geom;`;
-  toast('OpenStreetMap から既存道路を取得中…');
   let last;
-  for (const url of OVERPASS) {
-    try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      const list = j.elements.filter((e) => e.type === 'way' && e.geometry).map(osmToEx);
-      const res = addExisting(list);
-      return toast(`既存道路 ${res.added} 本を取得しました${dupMsg(res)}（© OpenStreetMap contributors）`);
-    } catch (e) { last = e; }
-  }
-  toast('既存道路の取得に失敗しました: ' + (last && last.message), 'err');
+  const res = await busy('OpenStreetMap から既存道路を取得中…', async () => {
+    for (const url of OVERPASS) {
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        return addExisting(j.elements.filter((e) => e.type === 'way' && e.geometry).map(osmToEx));
+      } catch (e) { last = e; }
+    }
+    return null;
+  });
+  if (res) toast(`既存道路 ${res.added} 本を取得しました${dupMsg(res)}（© OpenStreetMap contributors）`);
+  else toast('既存道路の取得に失敗しました: ' + (last && last.message), 'err');
 }
 async function fetchGSI() {
   if (map.getZoom() < 15) return toast('表示範囲が広すぎます。ズーム 15 以上に拡大してください', 'err');
@@ -366,23 +367,24 @@ async function fetchGSI() {
   const jobs = [];
   for (let x = tx(b.getWest()); x <= tx(b.getEast()); x++) for (let y = ty(b.getNorth()); y <= ty(b.getSouth()); y++) jobs.push([x, y]);
   if (jobs.length > 40) return toast('表示範囲が広すぎます。もう少し拡大してください', 'err');
-  toast('国土地理院 道路中心線を取得中…');
   const list = [];
   let okCount = 0;
-  await Promise.all(jobs.map(async ([x, y]) => {
-    try {
-      const r = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/experimental_rdcl/${z}/${x}/${y}.geojson`);
-      if (!r.ok) return;
-      const j = await r.json(); okCount++;
-      (j.features || []).forEach((f, i) => {
-        const g = f.geometry; if (!g) return;
-        const parts = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
-        parts.forEach((c, k) => list.push(gsiToEx(f, `gsi-${x}-${y}-${i}-${k}`, c)));
-      });
-    } catch (e) { /* タイル欠損は無視 */ }
-  }));
-  if (!okCount) return toast('地理院 道路中心線タイルを取得できませんでした', 'err');
-  const res = addExisting(list);
+  const res = await busy('国土地理院 道路中心線を取得中…', async () => {
+    await Promise.all(jobs.map(async ([x, y]) => {
+      try {
+        const r = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/experimental_rdcl/${z}/${x}/${y}.geojson`);
+        if (!r.ok) return;
+        const j = await r.json(); okCount++;
+        (j.features || []).forEach((f, i) => {
+          const g = f.geometry; if (!g) return;
+          const parts = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+          parts.forEach((c, k) => list.push(gsiToEx(f, `gsi-${x}-${y}-${i}-${k}`, c)));
+        });
+      } catch (e) { /* タイル欠損は無視 */ }
+    }));
+    return okCount ? addExisting(list) : null;
+  });
+  if (!res) return toast('地理院 道路中心線タイルを取得できませんでした', 'err');
   toast(`道路中心線 ${res.added} 本を取得しました${dupMsg(res)}（国土地理院ベクトルタイル提供実験）`);
 }
 function renderExisting() {
@@ -713,7 +715,13 @@ function toast(msg, kind) {
   const el = document.createElement('div');
   el.className = 'toast' + (kind === 'err' ? ' err' : ''); el.textContent = msg;
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), kind === 'err' ? 7000 : 4000);
+  if (kind !== 'busy') setTimeout(() => el.remove(), kind === 'err' ? 7000 : 4000);
+  return el;
+}
+/* 処理が終わるまで消えない「取得中」表示 */
+async function busy(msg, fn) {
+  const el = toast(msg, 'busy');
+  try { return await fn(); } finally { el.remove(); }
 }
 
 /* ───────── 標高（地理院 標高タイル）による現況縦断 ───────── */
@@ -743,9 +751,10 @@ async function elevation(ll) {
 }
 async function loadProfile(road) {
   const al = calc(road); if (al.length < 1) return;
-  toast('地理院 標高タイルから現況地盤高を取得中…');
   const step = Math.max(5, al.length / 400), pts = [];
-  for (let s = 0; s <= al.length + 1e-6; s += step) { const p = Geom.poseAt(al, Math.min(s, al.length)); pts.push({ s: p.s, h: await elevation(P.toLL(p.x, p.y)) }); }
+  await busy('地理院 標高タイルから現況地盤高を取得中…', async () => {
+    for (let s = 0; s <= al.length + 1e-6; s += step) { const p = Geom.poseAt(al, Math.min(s, al.length)); pts.push({ s: p.s, h: await elevation(P.toLL(p.x, p.y)) }); }
+  });
   const ok = pts.filter((p) => p.h != null);
   if (ok.length < 2) return toast('標高データを取得できませんでした', 'err');
   // 約 20m 区間の平均勾配
