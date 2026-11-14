@@ -6,16 +6,17 @@
 
   /* 設計速度別の基準値
    * Rmin: 最小曲線半径(15条) / Rex: 同・特例値 / clK,clMin: 曲線長 K/θ と下限(16条) / Ls: 緩和区間長(18条)
-   * sight: 視距(19条) / f: 横すべり摩擦係数(解説と運用) / grade: 縦断勾配 %(20条) */
+   * sight: 視距(19条) / f: 横すべり摩擦係数(解説と運用) / grade: 縦断勾配 %(20条) / gradeEx: 同・特例値
+   * vR, vRc: 凸形・凹形の縦断曲線の半径(22条) / vL: 縦断曲線長(22条) / comb: 合成勾配 %(25条) */
   const T = {
-    120: { Rmin: 710, Rex: 570, clK: 1400, clMin: 200, Ls: 100, sight: 210, f: 0.10, grade: 2 },
-    100: { Rmin: 460, Rex: 380, clK: 1200, clMin: 170, Ls: 85, sight: 160, f: 0.11, grade: 3 },
-    80: { Rmin: 280, Rex: 230, clK: 1000, clMin: 140, Ls: 70, sight: 110, f: 0.12, grade: 4 },
-    60: { Rmin: 150, Rex: 120, clK: 700, clMin: 100, Ls: 50, sight: 75, f: 0.13, grade: 5 },
-    50: { Rmin: 100, Rex: 80, clK: 600, clMin: 80, Ls: 40, sight: 55, f: 0.14, grade: 6 },
-    40: { Rmin: 60, Rex: 50, clK: 500, clMin: 70, Ls: 35, sight: 40, f: 0.15, grade: 7 },
-    30: { Rmin: 30, Rex: 30, clK: 350, clMin: 50, Ls: 25, sight: 30, f: 0.15, grade: 8 },
-    20: { Rmin: 15, Rex: 15, clK: 280, clMin: 40, Ls: 20, sight: 20, f: 0.15, grade: 9 },
+    120: { Rmin: 710, Rex: 570, clK: 1400, clMin: 200, Ls: 100, sight: 210, f: 0.10, grade: 2, gradeEx: 5, vR: 11000, vRc: 4000, vL: 100, comb: 10 },
+    100: { Rmin: 460, Rex: 380, clK: 1200, clMin: 170, Ls: 85, sight: 160, f: 0.11, grade: 3, gradeEx: 6, vR: 6500, vRc: 3000, vL: 85, comb: 10 },
+    80: { Rmin: 280, Rex: 230, clK: 1000, clMin: 140, Ls: 70, sight: 110, f: 0.12, grade: 4, gradeEx: 7, vR: 3000, vRc: 2000, vL: 70, comb: 10.5 },
+    60: { Rmin: 150, Rex: 120, clK: 700, clMin: 100, Ls: 50, sight: 75, f: 0.13, grade: 5, gradeEx: 8, vR: 1400, vRc: 1000, vL: 50, comb: 10.5 },
+    50: { Rmin: 100, Rex: 80, clK: 600, clMin: 80, Ls: 40, sight: 55, f: 0.14, grade: 6, gradeEx: 9, vR: 800, vRc: 700, vL: 40, comb: 11.5 },
+    40: { Rmin: 60, Rex: 50, clK: 500, clMin: 70, Ls: 35, sight: 40, f: 0.15, grade: 7, gradeEx: 10, vR: 450, vRc: 450, vL: 35, comb: 11.5 },
+    30: { Rmin: 30, Rex: 30, clK: 350, clMin: 50, Ls: 25, sight: 30, f: 0.15, grade: 8, gradeEx: 11, vR: 250, vRc: 250, vL: 25, comb: 11.5 },
+    20: { Rmin: 15, Rex: 15, clK: 280, clMin: 40, Ls: 20, sight: 20, f: 0.15, grade: 9, gradeEx: 12, vR: 100, vRc: 100, vL: 20, comb: 11.5 },
   };
   const SPEEDS = [120, 100, 80, 60, 50, 40, 30, 20];
 
@@ -215,11 +216,55 @@
     }
 
     /* ── 縦断（現況地盤） ── */
+    const vp = extra.vplan && extra.vplan.pf;
+    if (vp) {
+      /* ── 計画縦断 ── */
+      const vn = (i) => (i === 0 ? 'BP' : i === vp.pts.length - 1 ? 'EP' : 'VIP' + i);
+      const sta = (s) => `測点 ${f1(s)}m`;
+      for (const is of vp.issues) {
+        if (is.type === 'order') add('error', '縦断線形', `${vn(is.i)} の測点が前の点より手前`, '縦断変化点は起点側から順に、測点が増える順に並べる', '幾何条件');
+        if (is.type === 'overlap') add('error', '縦断線形', `${vn(is.i)}〜${vn(is.i + 1)} 間で縦断曲線が重なる`, `縦断曲線長の半分の合計が変化点間距離を ${f2(is.amount)}m 超過。曲線長を短くするか変化点を離す`, '幾何条件');
+      }
+      const lim = road.shitei ? Math.min(12, t.grade) : t.grade, limEx = road.shitei ? Math.min(12, t.gradeEx) : t.gradeEx;
+      let gmax = 0, gmaxAt = 0, flat = false;
+      vp.grades.forEach((g, k) => {
+        const a = Math.abs(g) * 100, s0 = vp.pts[k].s, s1 = vp.pts[k + 1].s, nm = `${vn(k)}〜${vn(k + 1)}`;
+        if (a > gmax) { gmax = a; gmaxAt = (s0 + s1) / 2; }
+        if (a < 0.3 && s1 - s0 > 1) flat = true;
+        if (a > limEx + 1e-9) add('error', '縦断勾配', `${nm}: 計画勾配 ${f2(g * 100)}% が上限超過`, `設計速度 ${V}km/h の縦断勾配 ${lim}%（特例 ${limEx}%）以下`, road.shitei && a > 12 ? '建築基準法施行令 第144条の4' : '道路構造令 第20条');
+        else if (a > lim + 1e-9) add('warn', '縦断勾配', `${nm}: 計画勾配 ${f2(g * 100)}% は特例値`, `標準 ${lim}%（特例 ${limEx}%）。地形の状況等によりやむを得ない場合に限る`, '道路構造令 第20条');
+      });
+      if (gmax <= lim + 1e-9) add('ok', '縦断勾配', `計画縦断の最大勾配 ${f2(gmax)}%`, `縦断勾配の規定値 ${lim}% 以下（${sta(gmaxAt)} 付近）`, '道路構造令 第20条');
+      if (flat) add('info', '縦断勾配', '勾配 0.3% 未満の区間あり', '路面排水のため、側溝のある区間等では 0.3% 以上の縦断勾配が望ましい', '道路構造令の解説と運用');
+      vp.curves.forEach((c) => {
+        const nm = vn(c.i), dg = Math.abs(c.dg) * 100;
+        if (dg < 0.05) return;
+        const kind = c.crest ? '凸形' : '凹形', Rmin = c.crest ? t.vR : t.vRc;
+        if (c.L <= 0) return add('error', '縦断曲線', `${nm}: 縦断曲線がない（勾配差 ${f2(dg)}%）`, `縦断勾配が変移する箇所には縦断曲線を設ける。${kind} R≥${Rmin}m・曲線長 ${t.vL}m 以上`, '道路構造令 第22条');
+        if (c.R < Rmin - 1e-6) add('error', '縦断曲線', `${nm}: ${kind}縦断曲線 R=${Math.round(c.R)}m が不足`, `設計速度 ${V}km/h の${kind}縦断曲線半径 ${Rmin}m 以上（必要曲線長 ${f1(Math.max(t.vL, (Rmin * dg) / 100))}m）`, '道路構造令 第22条');
+        else add('ok', '縦断曲線', `${nm}: ${kind}縦断曲線 R=${Math.round(c.R)}m`, `${kind}の縦断曲線半径 ${Rmin}m 以上`, '道路構造令 第22条');
+        if (c.L < t.vL - 1e-6) add('error', '縦断曲線', `${nm}: 縦断曲線長 ${f1(c.L)}m が不足`, `設計速度 ${V}km/h の縦断曲線長 ${t.vL}m 以上`, '道路構造令 第22条');
+      });
+      // 合成勾配（平面曲線区間の片勾配と縦断勾配）
+      if (extra.vplan.comb) for (const cb of extra.vplan.comb) {
+        if (cb.value > t.comb + 1e-9) add('error', '合成勾配', `IP${cb.ip}: 合成勾配 ${f1(cb.value)}% が上限超過`, `√(縦断勾配² + 片勾配²) ≤ ${t.comb}%（縦断 ${f1(cb.grade)}%・片勾配 ${f1(cb.e)}%）`, '道路構造令 第25条', cb.ip);
+        else add('ok', '合成勾配', `IP${cb.ip}: 合成勾配 ${f1(cb.value)}%`, `${t.comb}% 以下（縦断 ${f1(cb.grade)}%・片勾配 ${f1(cb.e)}%）`, '道路構造令 第25条', cb.ip);
+      }
+      const ex = extra.vplan;
+      if (ex.cut || ex.fill) add('info', '切土・盛土', `最大切土 ${f2(ex.cut ? ex.cut.d : 0)}m ／ 最大盛土 ${f2(ex.fill ? ex.fill.d : 0)}m`, `${ex.cut ? `切土は ${sta(ex.cut.s)} 付近` : ''}${ex.cut && ex.fill ? '、' : ''}${ex.fill ? `盛土は ${sta(ex.fill.s)} 付近` : ''}。現況地盤（地理院 DEM）との差`, '参考');
+      [['start', '起点'], ['end', '終点']].forEach(([k, label]) => {
+        const d = ex.ends && ex.ends[k];
+        if (d == null) return;
+        if (Math.abs(d) > 0.3) add('warn', '縦断線形', `${label}: 接続先の地盤高と ${f2(Math.abs(d))}m の高低差`, `計画高が現況地盤より ${d > 0 ? '高い' : '低い'}。接続部は既存道路の路面高に合わせる（すり付け）`, '接続条件');
+        else add('ok', '縦断線形', `${label}: 接続先の地盤高とほぼ一致（差 ${f2(Math.abs(d))}m）`, '既存道路の路面高にすり付け', '接続条件');
+      });
+    }
     if (extra.profile && extra.profile.maxGrade != null) {
       const g = extra.profile.maxGrade, lim = road.shitei ? Math.min(12, t.grade) : t.grade;
-      if (g <= lim) add('ok', '縦断勾配', `現況地盤の最大勾配 ${f1(g)}%`, `縦断勾配の規定値 ${lim}% 以下`, '道路構造令 第20条');
+      if (vp) add('info', '縦断勾配', `現況地盤の最大勾配 ${f1(g)}%（参考）`, `測点 ${f1(extra.profile.maxAt)}m 付近。照査は計画縦断で行っています`, '道路構造令 第20条');
+      else if (g <= lim) add('ok', '縦断勾配', `現況地盤の最大勾配 ${f1(g)}%`, `縦断勾配の規定値 ${lim}% 以下`, '道路構造令 第20条');
       else add('warn', '縦断勾配', `現況地盤の最大勾配 ${f1(g)}% が規定値 ${lim}% を超過`, `測点 ${f1(extra.profile.maxAt)}m 付近。切土・盛土による縦断計画が必要（特例値は条文参照）`, '道路構造令 第20条');
-      if (road.shitei && g > 12) add('warn', '位置指定道路', '縦断勾配 12% 超の区間あり', '縦断勾配は 12% 以下、かつ階段状でないこと', '建築基準法施行令 第144条の4');
+      if (!vp && road.shitei && g > 12) add('warn', '位置指定道路', '縦断勾配 12% 超の区間あり', '縦断勾配は 12% 以下、かつ階段状でないこと', '建築基準法施行令 第144条の4');
     }
     return out;
   }

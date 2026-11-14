@@ -111,6 +111,16 @@ function reportHtml() {
       ${tbl(['点名', '測点', '追加距離 (m)', 'X (m)', 'Y (m)', '緯度', '経度', '接線方位角'], al.points.map((pt) => { const ll = P.toLL(pt.x, pt.y); return [pt.name, station(pt.s), fmt(pt.s, 3), fmt(pt.x, 3), fmt(pt.y, 3), ll.lat.toFixed(7), ll.lng.toFixed(7), fmt(azimuth(pt.th), 4) + '°']; }))}
       <h2>線形要素</h2>
       ${tbl(['No.', '種別', '起点追加距離 (m)', '長さ (m)', 'R (m)', 'A', '起点方位角'], al.elements.map((e, i) => [i + 1, ELNAME[e.type], fmt(e.s0, 3), fmt(e.L, 3), e.R ? fmt(e.R, 2) : '—', e.A ? fmt(e.A, 2) : '—', fmt(azimuth(e.th0), 4) + '°']))}
+      ${(() => {
+        const pf = Geom.computeProfile(r.vips, al.length);
+        if (!pf) return '';
+        const np = pf.pts.length;
+        return `<h2>縦断図</h2><div class="vprint">${profileSvg(r, 1040, 300)}</div>
+      <h2>縦断変化点</h2>
+      ${tbl(['点', '測点', '追加距離 (m)', '計画高 (m)', '前勾配', '後勾配', 'VCL (m)', '縦断曲線半径 (m)', '形状'], pf.pts.map((p, i) => { const cv = pf.curves[i - 1]; return [i === 0 ? 'BP' : i === np - 1 ? 'EP' : 'VIP' + i, station(p.s), fmt(p.s, 3), fmt(p.z, 3), i > 0 ? sgnPct(pf.grades[i - 1]) : '—', i < np - 1 ? sgnPct(pf.grades[i]) : '—', cv ? fmt(cv.L, 2) : '—', cv && cv.L > 0 && isFinite(cv.R) ? fmt(cv.R, 1) : '—', cv && cv.L > 0 && Math.abs(cv.dg) > 0.0005 ? (cv.crest ? '凸形' : '凹形') : '—']; }))}
+      <h2>縦断計算（計画高・切盛）</h2>
+      ${tbl(['点名', '測点', '追加距離 (m)', '計画高 (m)', '勾配', '地盤高 (m)', '切盛 (m)'], vplanRows(r).map((x) => [x.name, x.station, fmt(x.s, 3), fmt(x.z, 3), sgnPct(x.g), x.h == null ? '—' : fmt(x.h, 3), x.d == null ? '—' : (x.d >= 0 ? '盛 ' : '切 ') + fmt(Math.abs(x.d), 3)]))}`;
+      })()}
       <h2>照査結果（不適合 ${cnt('error')}・要確認 ${cnt('warn')}・参考 ${cnt('info')}・適合 ${cnt('ok')}）</h2>
       ${tbl(['判定', '項目', '内容', '根拠'], ['error', 'warn', 'info', 'ok'].flatMap((l) => res.filter((x) => x.level === l)).map((x) => [`<span class="lv ${x.level}">${LV[x.level]}</span>`, esc(x.title), esc(x.detail), esc(x.ref)]))}
       <p class="sm">道路構造令（本則の表）・建築基準法施行令および「道路構造令の解説と運用」の一般的な目安に基づく簡易照査です。条例・道路管理者基準・特例値の適用条件は別途確認してください。</p></div>`;
