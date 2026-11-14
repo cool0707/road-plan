@@ -629,6 +629,10 @@ function drawAnnotations(road, al, g) {
   const sw = Rules.totalWidth(road) / 2, z = map.getZoom(), base = { pane: 'design', interactive: false };
   const tick = (p, len) => [P.toLL(p.x - Math.sin(p.th) * len, p.y + Math.cos(p.th) * len), P.toLL(p.x + Math.sin(p.th) * len, p.y - Math.cos(p.th) * len)];
   L.polyline(road.ips.map((p) => P.toLL(p.x, p.y)), { ...base, color: '#0d99ff', weight: 1, dashArray: '5 5', opacity: 0.9 }).addTo(g);
+  if (al.length > 0) { // 幅員・車線数の吹き出し（道路中央・左側）
+    const lg = al.elements.reduce((m, e) => (e.L > m.L ? e : m), al.elements[0]), p = Geom.poseAt(al, lg ? lg.s0 + lg.L / 2 : al.length / 2), q = tick(p, sw + 14 / Math.max(pxPerM(), 0.2))[0];
+    label(q, `${road.lanes}車線 ・ 全幅 ${fmt(Rules.totalWidth(road), 2)}m`, 'wd', [0, 10]).addTo(g);
+  }
   if (z >= 15) {
     const pitch = z >= 18 ? 20 : z >= 16.5 ? 100 : 500;
     for (let s = 0; s <= al.length; s += 20) {
@@ -736,8 +740,13 @@ function setTool(t) {
     ui.draw = { ips: [], startRef: null, endRef: null, cursor: null }; ui.sel = null;
   }
   $('#map').className = $('#map').className.replace(/\btool-\w+/g, '').trim() + ' tool-' + t;
-  const h = $('#hint'); h.hidden = !HINTS[t]; h.innerHTML = HINTS[t] || '';
+  updateHint();
   renderExisting(); refresh();
+}
+function updateHint() {
+  const t = ui.tool, h = $('#hint'), d = project.defaults;
+  h.hidden = !HINTS[t];
+  h.innerHTML = (HINTS[t] || '') + (t === 'draw' ? `<div class="hint-sub">幅員: <b>${d.lanes}車線・全幅 ${fmt(Rules.totalWidth(d), 2)}m</b>（右パネルで変更できます）</div>` : '');
 }
 function previewRoad() {
   const d = ui.draw, ips = d.ips.map((p) => ({ x: p.x, y: p.y, R: 0, A1: 0, A2: 0 }));
@@ -770,6 +779,7 @@ function finishDraw() {
   project.roads.push(road);
   ui.draw = null; ui.tool = 'select'; ui.sel = { type: 'road', id: road.id };
   setTool('select'); commit();
+  toast(`${road.name} を作成（${road.lanes}車線・全幅 ${fmt(Rules.totalWidth(road), 2)}m）。幅員・車線数は右パネルの一番上で変更できます`);
 }
 
 /* 計測 */
