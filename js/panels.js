@@ -37,12 +37,14 @@ function renderLeft() {
     <div class="lgroup"><span>計画道路</span><button class="ibtn" data-act="tool-draw" title="道路を描く (P)">${ic('plus')}</button></div>
     ${roads || '<div class="empty">下のツールバーの <b>道路を描く</b> で地図上をクリックして作成します。</div>'}
     <div class="lgroup"><span>既存道路</span><span></span></div>
-    <div class="layer${ui.sel && ui.sel.type === 'existing' ? ' sel' : ''}"><span class="dot" style="background:#0f9d8f"></span><span class="nm">${project.existing.length ? project.existing.length + ' 本' : '未取得'}</span>
-      <button class="ibtn" data-act="clear-existing" title="既存道路をクリア">${ic('trash')}</button>
+    <div class="layer${ui.sel && ui.sel.type === 'existing' ? ' sel' : ''}"><span class="dot" style="background:#0f9d8f"></span><span class="nm">${exCount()}</span>
+      <button class="ibtn" data-act="clear-existing" title="既存道路をすべてクリア">${ic('trash')}</button>
       <button class="ibtn${project.existingVisible ? '' : ' off'}" data-act="vis-existing" title="表示切替">${ic(project.existingVisible ? 'eye' : 'eyeoff')}</button></div>
     <div class="sec" style="border:0;padding-top:4px">
       <div class="row"><button class="btn" data-act="fetch-osm" title="表示範囲の道路を OpenStreetMap (Overpass API) から取得">OSM から取得</button><button class="btn" data-act="fetch-gsi" title="表示範囲の道路中心線を国土地理院ベクトルタイルから取得">地理院から取得</button></div>
-      <div class="muted small">表示中の範囲の道路を読み込み、接続先として吸着できます。</div>
+      <div class="row one"><label class="fld" title="既存道路の表示方法（幅員どおり: 幅員の値で帯状に描画）"><span class="lb">表示方法</span><select data-key="existingWidth"><option value="0"${project.existingWidth ? '' : ' selected'}>中心線</option><option value="1"${project.existingWidth ? ' selected' : ''}>幅員どおり</option></select></label></div>
+      <div class="row one"><button class="btn" data-act="dedupe-existing" title="OSM と地理院など、ほぼ同じ位置に重なっている既存道路を 1 本にまとめる"${project.existing.length ? '' : ' disabled'}>重複を除去</button></div>
+      <div class="muted small">表示中の範囲の道路を読み込み、接続先として吸着できます。取得時、既に読み込んだ道路と重なる線は自動で除外します。不要な道路はクリックして選択し <kbd>Delete</kbd> で削除できます。</div>
     </div>
     <div class="lgroup" style="border-top:1px solid var(--line)"><span>下絵画像</span><button class="ibtn" data-act="add-image" title="地図画像・図面を読み込む">${ic('plus')}</button></div>
     ${im ? `<div class="layer${ui.sel && ui.sel.type === 'image' ? ' sel' : ''}" data-act="sel-image"><span class="dot" style="background:#7b61ff"></span><span class="nm">下絵${ui.imageUrl ? '' : '（画像データなし）'}</span><button class="ibtn${im.visible ? '' : ' off'}" data-act="vis-image" title="表示切替">${ic(im.visible ? 'eye' : 'eyeoff')}</button></div>` : '<div class="empty">図面や地図のスクリーンショットを重ねられます。</div>'}
@@ -52,6 +54,13 @@ function renderLeft() {
       <div class="row one">${num('不透明度', 'base.opacity', project.baseOpacity * 100, { unit: '%', step: 1, dec: 0 })}</div>
       <div class="row one"><label class="fld" title="Google Maps Platform の Map Tiles API キー（このブラウザにのみ保存）"><span class="lb">Google APIキー</span><input type="password" data-key="googleKey" value="${esc(project.googleKey)}" placeholder="未設定" style="text-align:left"></label></div>
     </div>`;
+}
+
+function exCount() {
+  const n = project.existing.length;
+  if (!n) return '未取得';
+  const osm = project.existing.filter((e) => e.src === 'OSM').length, gsi = n - osm;
+  return `${n} 本` + (osm && gsi ? `（OSM ${osm}・地理院 ${gsi}）` : osm ? '（OSM）' : '（地理院）');
 }
 
 /* ───────── 右パネル ───────── */
@@ -180,6 +189,7 @@ function existingPanel() {
     ['幅員', `約 ${fmt(ex.width, 1)} m`], ['幅員の根拠', esc(ex.widthNote)], ex.lanes ? ['車線数', ex.lanes] : null,
     ['速度', `${ex.speed} km/h${ex.speedEst ? '（種別から推定）' : '（最高速度）'}`], ['一方通行', ex.oneway ? 'あり' : 'なし'], ex.surface ? ['路面', esc(ex.surface)] : null,
     ['クリック位置の方位角', `${fmt(az, 1)}° / ${fmt((az + 180) % 360, 1)}°`], ['データ', esc(ex.src) + ' ' + esc(ex.id.replace(/^(osm|gsi)-/, ''))]]))
+    + `<div class="row one" style="margin:8px 12px"><button class="btn danger" data-act="del-existing">この既存道路を削除 (Delete)</button></div>`
     + `<div class="note">幅員・速度はデータにタグが無い場合は推定値です。接続設計では現地測量値・道路台帳を確認してください。<br>この道路に接続するには <b>道路を描く</b> で線上をクリックします。</div>`;
 }
 
@@ -240,6 +250,7 @@ function setValue(key, raw, live) {
     case 'img.opacity': set(im, 'opacity', isFinite(v) ? Math.max(0.05, Math.min(1, v / 100)) : null); break;
     case 'base.opacity': if (isFinite(v)) { project.baseOpacity = Math.max(0, Math.min(1, v / 100)); baseLayer && baseLayer.setOpacity(project.baseOpacity); } break;
     case 'googleKey': project.googleKey = raw.trim(); save(); return;
+    case 'existingWidth': project.existingWidth = raw === '1'; save(); return renderExisting();
     case 'base': { const prev = project.base; setBase(raw).then((ok) => { if (!ok) project.base = prev; save(); renderPanels(); }); return; }
     default: return;
   }
@@ -286,7 +297,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'enter' && ui.tool === 'draw') { ui.draw.cursor = null; finishDraw(); }
   else if (k === 'escape') { if (!$('#modal').hidden) $('#modal').hidden = true; else if (ui.tool !== 'select') setTool('select'); else select(null); }
   else if (k === 'backspace' && ui.tool === 'draw') { e.preventDefault(); ui.draw.ips.pop(); if (!ui.draw.ips.length) { ui.draw.startRef = null; ui.draw.cursor = null; } renderMap(); }
-  else if (k === 'delete' || k === 'backspace') { const r = selRoad(); if (r && ui.sel.ip != null) act('ip-delete'); else if (r) act('del-road'); }
+  else if (k === 'delete' || k === 'backspace') { const r = selRoad(); if (r && ui.sel.ip != null) act('ip-delete'); else if (r) act('del-road'); else if (ui.sel && ui.sel.type === 'existing') act('del-existing'); }
 });
 
 /* ラベルのドラッグで数値を増減（スクラブ） */
@@ -316,6 +327,8 @@ function act(a, el) {
     case 'fetch-osm': return fetchOSM();
     case 'fetch-gsi': return fetchGSI();
     case 'clear-existing': project.existing = []; if (ui.sel && ui.sel.type === 'existing') ui.sel = null; save(); renderExisting(); return refresh();
+    case 'del-existing': return ui.sel && ui.sel.type === 'existing' && deleteExisting(ui.sel.id);
+    case 'dedupe-existing': return dedupeExisting();
     case 'vis-existing': project.existingVisible = !project.existingVisible; save(); renderExisting(); return renderPanels();
     case 'add-image': return $('#fileImage').click();
     case 'sel-image': return select({ type: 'image' });
@@ -436,6 +449,7 @@ function showHelp() {
   $('#modal .modal-card').innerHTML = `<h2>Road Plan の使い方</h2>
     <h4>基本操作</h4><ul>
       <li><kbd>P</kbd> 道路を描く: 地図をクリックして IP（交点）を順に置く。<kbd>ダブルクリック</kbd> / <kbd>Enter</kbd> で確定。設計速度に応じたクロソイド＋円曲線が自動で入ります。</li>
+      <li>既存道路（緑の線）は左パネルで「中心線」/「幅員どおり」の表示を切替。クリックで選択して <kbd>Delete</kbd> で削除。OSM と地理院を両方取得しても重なる線は自動で除外されます（既存データは「重複を除去」）。</li>
       <li>既存道路（緑の線）や他の計画道路の近くでは緑の丸に吸着し、そこに<b>接続</b>します。接続後は右パネルで「交差・T字」か「延伸（接線方向に拘束）」を選べます。</li>
       <li><kbd>V</kbd> 選択: 道路をクリック → IP ハンドルをドラッグ。線上の小さな丸をクリックすると IP を追加。<kbd>Delete</kbd> で削除。</li>
       <li>右パネルの数値はラベルを左右にドラッグ、または <kbd>↑</kbd><kbd>↓</kbd>（<kbd>Shift</kbd> で 10 倍）で増減できます。</li>
