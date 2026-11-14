@@ -348,3 +348,23 @@ table.tr-data input.cell.conv::placeholder { color: #898781; font-style: italic;
 table.tr-data tr.sel td { background: var(--accent-bg); } table.tr-data tr.off td { opacity: 0.5; } table.tr-data tr.grp td { background: var(--bg2); padding: 4px 6px; } table.tr-data td.ops { white-space: nowrap; text-align: right; } table.tr-data td.ops .ibtn { display: inline-grid; }
 .tr-bad { color: #a11d17; font-weight: 600; font-size: 10.5px; border-bottom: 1px dotted; cursor: help; }
 .modal-card ol { padding-left: 18px; line-height: 1.9; } .modal-card input[type=date] { border: 0; background: none; height: 24px; }
+
+/* ───────── 計画検討 ───────── */
+.sd-pick { padding: 8px 12px 2px; border-bottom: 1px solid var(--line); }
+.sd-total { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; } .sd-total b { font-size: 18px; font-variant-numeric: tabular-nums; } .sd-total .muted { margin-left: auto; font-size: 10.5px; text-align: right; }
+.sd-total.ok b { color: #0b7a3e; } .sd-total.ng b { color: #b3261e; }
+table.sd-ct td, table.sd-ct th { padding: 3px 4px; } table.sd-ct td:first-child { white-space: normal; } table.sd-ct tr.sum td { border-top: 1px solid var(--line); font-weight: 600; }
+table.sd-ct td.bad, .sd-hz b.bad { color: #b3261e; font-weight: 600; } table.sd-ct + .kv, .kv + table.sd-ct { margin-top: 8px; }
+table.sd-xt td, table.sd-xt th { padding: 3px; } table.sd-xt td.nm { max-width: 92px; overflow: hidden; text-overflow: ellipsis; text-align: left; } table.sd-xt td:last-child, table.sd-xt th:last-child { text-align: left; padding-left: 6px; }
+.sd-x { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+svg.sd-mass { width: 100%; height: 64px; display: block; background: var(--bg2); border-radius: 5px; margin-top: 8px; }
+svg.sd-mass polyline { fill: none; stroke: #6b5b45; stroke-width: 1.5; vector-effect: non-scaling-stroke; } svg.sd-mass .z { stroke: #b3b3b3; stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.sd-cap { margin-top: 3px; }
+.sd-key { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px; } .sd-key.fill { background: #f5b642; } .sd-key.cut { background: #a1887f; } .sd-key.hit { background: #f24822; }
+.sd-key.row { background: none; border-radius: 0; border-top: 2px dashed #b3261e; height: 0; vertical-align: 3px; }
+.sd-hz { height: auto; min-height: 22px; } .sd-hz span { flex: 1; } .sd-hz b { font-weight: 500; color: var(--text2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sd-hzd { margin: -2px 0 2px 22px; }
+.pt-label.sd-lb { background: #1e1e1e; color: #fff; padding: 2px 6px; border-radius: 4px; text-shadow: none; font-weight: 500; }
+table.sd-cmp { width: auto; } table.sd-cmp thead th { position: sticky; top: 0; background: #fff; z-index: 1; } table.sd-cmp td, table.sd-cmp th { padding: 3px 14px; }
+table.sd-cmp td:first-child { color: var(--text2); } table.sd-cmp .cur { background: var(--accent-bg); } table.sd-cmp th button { font-weight: 600; color: var(--text); }
+body.study-on .leaflet-exband-pane { opacity: 0.12 !important; } body.study-on .leaflet-existing-pane { opacity: 0.35; }

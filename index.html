@@ -23,6 +23,7 @@
   <div class="tb-group">
     <button class="tbtn v3btn" data-act="view3d" title="3D で表示（地形・計画高・切盛のり面）。高画質のスクリーンショットも撮れます"></button>
     <button class="tbtn v3btn" data-act="traffic" title="交通量の予測: 計画道路の整備あり・なしで交通量と混雑度を比べます"></button>
+    <button class="tbtn v3btn" data-act="study" title="計画検討: 土工量・用地・支障物件・交差・区分と車線数・概算事業費・費用便益（B/C）・沿道騒音・災害リスクを確認し、計画道路どうしを比べます"></button>
   </div>
   <div class="spacer"></div>
   <div class="tb-group">
@@ -37,6 +38,7 @@
         <button data-act="export-csv">線形計算書 (.csv)</button>
         <button data-act="export-dxf">DXF（ローカル座標 m）</button>
         <button data-act="tr-export">交通量の予測結果 (.csv)</button>
+        <button data-act="sd-export">計画検討の結果 (.csv)</button>
       </div>
     </div>
     <button class="ibtn" data-act="help" title="ヘルプ (?)"></button>
@@ -73,6 +75,8 @@
 <script src="js/traffic.js"></script>
 <script src="js/app.js"></script>
 <script src="js/trafficui.js"></script>
+<script src="js/study.js"></script>
+<script src="js/studyui.js"></script>
 <script src="js/panels.js"></script>
 <script src="js/report.js"></script>
 <script src="js/search.js"></script>

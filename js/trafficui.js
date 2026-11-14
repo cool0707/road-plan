@@ -40,7 +40,13 @@ const TrafficUI = (() => {
     if (st.net && ui.dragging) return st.net; // IP のドラッグ中は作り直さない
     const sig = signature(), t = tr();
     if (st.net && st.sig === sig && exRef === project.existing && obsRef === t.obs) return st.net;
-    const roads = [], s0 = setting(), minRank = { all: 0.5, main: 1, arterial: 2 }[s0.scope] || 1, extra = [];
+    const net = makeNet(null);
+    st.net = net; st.sig = sig; exRef = project.existing; obsRef = t.obs; st.res = null; st.drawSig = '';
+    return net;
+  }
+  /* 既存道路と計画道路からネットワークを作る。only（計画道路の id の Set）を渡すと、その計画道路だけを入れる */
+  function makeNet(only) {
+    const t = tr(), roads = [], s0 = setting(), minRank = { all: 0.5, main: 1, arterial: 2 }[s0.scope] || 1, extra = [];
     const withMw = !!s0.motorway || project.roads.some((r) => r.visible !== false && T.planKind(r) === 'mw'); // 高速道路は、含める設定か計画道路が自動車専用のときだけ
     for (const ex of project.existing) {
       const kind = T.kindOf(ex.cls, ex.width); if (kind === 'sv' || (kind === 'mw' && !withMw)) continue; // 敷地内通路・農道は対象外
@@ -51,7 +57,7 @@ const TrafficUI = (() => {
       roads.push({ id: ex.id, xy: ex.pts.map((p) => P.toXY(p)), kind, lanes: ex.lanes || 0, speed: ex.speed, speedEst: ex.speedEst, oneway: ex.oneway ? 1 : 0, name: ex.name, width: ex.width, sep: !!ex.sep });
     }
     for (const r of project.roads) {
-      if (r.visible === false) continue;
+      if (r.visible === false || (only && !only.has(r.id))) continue;
       const sm = calc(r).samples; if (sm.length < 2) continue;
       const xy = []; sm.forEach((p, i) => { const l = xy[xy.length - 1]; if (!l || i === sm.length - 1 || Math.hypot(p.x - l.x, p.y - l.y) >= 8) xy.push({ x: p.x, y: p.y }); });
       roads.push({ id: r.id, xy, kind: T.planKind(r), lanes: r.lanes, speed: r.V, oneway: 0, name: r.name, width: Rules.carriage(r), planned: true, cross: r.tcross !== false, tv: r.tv || 0 });
@@ -67,9 +73,17 @@ const TrafficUI = (() => {
     net.obsInfo = new Map(obs.map((o) => [o.id, { unmatched: !!o.unmatched, dirUnknown: !!o.dirUnknown, edgeKey: o.edgeKey }]));
     T.baseVolumes(net, s.period);
     net.extraLocal = extra;
-    st.net = net; st.sig = sig; exRef = project.existing; obsRef = t.obs; st.res = null; st.drawSig = '';
     return net;
   }
+  /* 計画検討（費用便益分析など）用: 日交通量で整備なし・ありを計算する。画面の表示中のネットワーク・結果には触れない。
+   * only = 整備する計画道路の id の配列（省略で表示中のすべて）。戻り値 { net, res } */
+  function forecastDay(only) {
+    const net = makeNet(only ? new Set(only) : null);
+    if (!net.edges.length) return { net, res: null };
+    return { net, res: T.run(net, Object.assign(setting(), { period: 'day', extraLocal: net.extraLocal })) };
+  }
+  /* forecastDay の結果が古くなったかを見るための署名 */
+  const daySig = () => signature() + '#' + JSON.stringify(Object.assign(setting(), { period: 'day' })) + '#' + project.existing.length + '#' + tr().obs.length;
   const runSig = () => st.sig + '#' + JSON.stringify(setting());
   const stale = () => !st.res || st.resSig !== runSig();
   function compute() {
@@ -560,6 +574,7 @@ const TrafficUI = (() => {
   /* ───────── 操作 ───────── */
   function toggle(on) {
     st.on = on == null ? !st.on : on;
+    if (st.on && typeof StudyUI !== 'undefined' && StudyUI.isOn()) StudyUI.toggle(false); // 計画検討の画面とは同時に開かない
     document.body.classList.toggle('traffic-on', st.on);
     if (!st.on) { if (ui.tool === 'tobs') setTool('select'); st.sel = null; }
     else { ui.sel = null; st.drawSig = ''; if (!tr().obs.length && !project.existing.length) toast('まず左パネルで既存道路を読み込み、「センサスを取得」で交通量データを読み込みます'); }
@@ -641,5 +656,5 @@ const TrafficUI = (() => {
       <p class="sm">現況は観測データ（実データ）または推定値、整備なし・整備ありは配分計算による予測値です。読み込んだ範囲の道路だけで作る簡易な需要予測（需要固定）で、交通容量・換算係数は令和3年度 全国道路・街路交通情勢調査（国土交通省）の全国集計を加工した値を使っています。</p></div>`;
   }
 
-  return { st, toggle, panel, render, renderDock, setValue, act, mapClick, schedule, report, isOn: () => st.on, reset() { st.net = null; st.res = null; st.sel = null; st.drawSig = ''; st.sig = ''; }, importCsv, importJartic, censusObs };
+  return { st, toggle, panel, render, renderDock, setValue, act, mapClick, schedule, report, forecastDay, daySig, setting, isOn: () => st.on, reset() { st.net = null; st.res = null; st.sel = null; st.drawSig = ''; st.sig = ''; }, importCsv, importJartic, censusObs };
 })();

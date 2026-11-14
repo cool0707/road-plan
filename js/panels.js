@@ -19,6 +19,7 @@ const ICON = {
   xsec: '<path d="M3 17c3-1 4-6 7-6s3 4 6 4 3-3 5-3"/><path d="M3 21h18"/><path d="M12 3v6" stroke-dasharray="2 2"/>',
   target: '<circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
   flow: '<path d="M3 17h5l4-10h9"/><path d="M17 3l4 4-4 4"/><path d="M3 7h4"/><path d="M14 17h7"/>',
+  study: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="M8.5 12l2 2 3.5-4"/><path d="M8.5 17h7"/>',
 };
 const ic = (n) => `<svg class="ic" viewBox="0 0 24 24">${ICON[n]}</svg>`;
 
@@ -77,6 +78,7 @@ function renderRight() {
   const scroll = el.scrollTop;
   let tabs = '', body = '';
   if (TrafficUI.isOn()) body = TrafficUI.panel(); // 交通量の表示中は、選択にかかわらず交通量パネル
+  else if (StudyUI.isOn()) body = StudyUI.panel(); // 計画検討の表示中は、選択中（なければ先頭）の計画道路の検討結果
   else if (road) {
     const res = checksOf(road), ne = res.filter((r) => r.level === 'error').length, nw = res.filter((r) => r.level === 'warn').length;
     const badge = ne ? `<span class="badge error">${ne}</span>` : nw ? `<span class="badge warn">${nw}</span>` : '<span class="badge ok">✓</span>';
@@ -254,6 +256,7 @@ function profileSvg(road, W, H, o = {}) {
 /* 地図下部の縦断図 */
 function renderDock() {
   if (TrafficUI.isOn()) return TrafficUI.renderDock();
+  if (StudyUI.dockOn()) return StudyUI.renderDock();
   const el = $('#vdock'), road = selRoad(), xsOn = typeof xsecActive === 'function' && xsecActive();
   const on = xsOn || !!(ui.vdock && road && road.visible !== false && road.vips && road.vips.length >= 2);
   if (el.hidden === on) { el.hidden = !on; $('#stage').classList.toggle('dock-on', on); map.invalidateSize({ pan: false }); }
@@ -351,7 +354,8 @@ function renderChrome() {
     + `<span class="sep"></span><button data-act="fetch-osm" data-tip="既存道路を取得 (OSM)">${ic('roads')}</button><button data-act="add-image" data-tip="下絵画像を追加">${ic('image')}</button>`;
   const u = $('[data-act=undo]'), r = $('[data-act=redo]');
   u.innerHTML = ic('undo'); $('[data-act=view3d]').innerHTML = ic('cube') + '<span>3D</span>';
-  const tb = $('[data-act=traffic]'); tb.innerHTML = ic('flow') + '<span>交通量</span>'; tb.classList.toggle('on', TrafficUI.isOn()); r.innerHTML = ic('redo'); $('[data-act=help]').innerHTML = ic('help');
+  const tb = $('[data-act=traffic]'); tb.innerHTML = ic('flow') + '<span>交通量</span>'; tb.classList.toggle('on', TrafficUI.isOn());
+  const sb = $('[data-act=study]'); sb.innerHTML = ic('study') + '<span>検討</span>'; sb.classList.toggle('on', StudyUI.isOn()); r.innerHTML = ic('redo'); $('[data-act=help]').innerHTML = ic('help');
   u.disabled = !hist.undo.length; r.disabled = !hist.redo.length;
   if (document.activeElement !== $('#projName')) $('#projName').value = project.name;
 }
@@ -360,6 +364,7 @@ function renderPanels() { renderChrome(); renderLeft(); renderRight(); renderDoc
 /* ───────── 値の変更 ───────── */
 function setValue(key, raw, live) {
   if (key.startsWith('tr.')) { if (!live) TrafficUI.setValue(key, raw); return; }
+  if (key.startsWith('sd.')) { if (!live) StudyUI.setValue(key, raw); return; }
   const v = parseFloat(raw), road = selRoad(), pos = (x, min = 0) => (isFinite(x) ? Math.max(min, x) : null);
   const ip = road && ui.sel.ip != null ? road.ips[ui.sel.ip] : null, im = project.image;
   const set = (o, k, val) => { if (val != null) o[k] = val; };
@@ -537,6 +542,7 @@ document.addEventListener('pointerdown', (e) => {
 function act(a, el) {
   const road = selRoad(), id = el && el.closest('[data-id]') ? el.closest('[data-id]').dataset.id : null;
   if (a === 'traffic' || a.startsWith('tr-')) return TrafficUI.act(a, el);
+  if (a === 'study' || a.startsWith('sd-')) return StudyUI.act(a, el);
   switch (a) {
     case 'undo': return undo();
     case 'redo': return redo();
@@ -730,6 +736,16 @@ function showHelp() {
       <li>同じ区間に複数のデータがあるときは 実測 → 常時観測 → 自治体等の調査・センサス実測 → センサス推定値 の順に使い、データの無い道路は道路種別・車線数・沿道状況（地区の属性）から推定します。区間をクリックすると候補を選び直せます。</li>
       <li><b>見分け方</b>: 実データは実線・「実」、推定値は破線・「推」、配分計算による予測値は中央に白い点線・「予」。別の時間帯から換算した値には「換」が付きます。</li>
       <li><b>時間帯</b>: 日交通量（24時間）／昼間12時間／ピーク時／朝ピーク／夕ピーク／夜間12時間。<b>方法</b>: OD の推定（リンク観測交通量による補正／重力モデル／比例配分）と配分（利用者均衡／分割配分／確率的配分／最短経路／転換率法）を選べます。</li></ul>
+    <h4>計画検討（土工・用地・交差・区分と車線数・事業費・B/C・騒音・災害リスク）</h4><ul>
+      <li>上部バーの <b>検討</b> で、選択中の計画道路について、線形の照査とは別に計画段階で確認する項目をまとめて計算します。結果は「不適合・要確認・参考・適合」の一覧と項目ごとの数量で出ます（計画道路を描き直すと自動で計算し直します）。</li>
+      <li><b>土工・用地</b>: 横断ごと（約 10m ピッチ）に現況地盤（地理院 標高タイル）と 盛土 1:1.5／切土 1:1.0 ののり面から切土・盛土の断面積を求め、平均断面法で土量にします。切土の盛土への流用（土量変化率 C）・不足土・残土、土積図、のり面積、橋梁区間（盛土高 8m 超）、用地面積（のり尻・のり肩＋余裕幅）、用地にかかる建物（地理院 最適化ベクトルタイルの建物外形）、水域の横断を出し、地図に盛土・切土ののり面、用地境界、かかる建物を描きます。</li>
+      <li><b>交差・接続</b>: 途中で横切る既存道路・他の計画道路ごとに、測点・交差角・高低差（計画高 − 現況地盤高）から 平面交差／立体交差（桁下 4.5m＋桁高）／不成立 を判定し、平面交差の間隔も確認します。</li>
+      <li><b>計画交通量・区分・車線数</b>: 道路の種類（一般国道・都道府県道・市町村道など）と地形、計画交通量（入力するか、交通量の予測の値）から、道路構造令 第3条の級と第5条の設計基準交通量による車線数を判定します。</li>
+      <li><b>概算事業費</b>: 土工・のり面・舗装・橋梁・排水等・用地・建物補償の数量 × 単価（「単価を変更する」で地域の実績に置き換え）＋諸経費・測量設計費。</li>
+      <li><b>費用便益分析（B/C）</b>: 「交通量の予測から便益を計算」で、日交通量の整備なし・ありの配分結果から、国土交通省「費用便益分析マニュアル」（令和7年8月）の走行時間短縮・走行経費減少・交通事故減少便益を求め、事業費・維持管理費と合わせて B/C・純現在価値・EIRR・感度分析（±10%）を出します。先に <b>交通量</b> の画面でデータを読み込み、現況の再現性を確認してください。</li>
+      <li><b>沿道騒音</b>: 計画交通量・大型車混入率・走行速度から、道路端の等価騒音レベル（昼・夜）を ASJ RTN-Model のパワーレベル式で概算し、環境基準と比べます。<b>災害リスク</b>: ハザードマップポータルサイトの洪水・高潮・津波の浸水想定区域と土砂災害警戒区域を地図に重ね、中心線が区域を通る延長を数えます。</li>
+      <li><b>比較表</b>: 「比較表を開く」で、計画道路どうしを延長・線形・土工・用地・交差・事業費・交通量・B/C などの同じ項目で並べます。「計画道路を比較案として 1 路線ずつ評価」をオンにすると、路線ごとに単独で整備した場合の B/C を出します。結果は CSV と PDF（計画検討のページ）に出ます。</li>
+      <li>住民合意・景観・文化財・用途地域や保安林などの法規制のように、機械的に計算できない項目は扱いません。数量・事業費・便益は概略値です。</li></ul>
     <h4>データ</h4><ul>
       <li>書き出し ▾ → PDF: 平面図（標準縮尺・背景地図つき）と線形計算書・照査結果を印刷ダイアログ経由で PDF 保存。</li>
       <li>背景: 地理院タイル / 地理院ベクトル（Google 風）/ OpenStreetMap / Google（Map Tiles API キーが必要）/ 任意の画像。</li>
@@ -741,7 +757,7 @@ function showHelp() {
 
 /* ───────── 起動 ───────── */
 function resetAll() {
-  alCache.clear(); ui.profiles.clear(); ui.draw = null; ui.tool = 'select'; TrafficUI.reset();
+  alCache.clear(); ui.profiles.clear(); ui.draw = null; ui.tool = 'select'; TrafficUI.reset(); StudyUI.reset();
   hist.undo = []; hist.redo = []; hist.last = snapshot();
   setBase(project.base).then((ok) => { if (!ok) setBase('gsi-pale'); renderPanels(); });
   syncImageLayer(); renderExisting(); setTool('select'); save();

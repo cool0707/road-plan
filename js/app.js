@@ -16,7 +16,7 @@ const LS_KEY = 'roadplan.project.v1';
 function newProject() {
   return {
     version: 1, name: '無題の道路計画', origin: null, roads: [], existing: [], image: null,
-    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, healTol: 8, view: null, googleKey: '', traffic: null,
+    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, healTol: 8, view: null, googleKey: '', traffic: null, study: null,
     defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false, snow: '', bike: false },
   };
 }
@@ -619,7 +619,7 @@ function snapAt(cp, excludeId) {
     const r = best.road, p = best.pr.pose;
     return {
       latlng: P.toLL(p.x, p.y),
-      ref: { refType: 'design', refId: r.id, name: r.name, bearing: p.th, width: Rules.carriage(r), speed: r.V, speedEst: false, isEnd: best.pr.s < 0.5 || best.pr.s > al.length - 0.5 },
+      ref: { refType: 'design', refId: r.id, name: r.name, bearing: p.th, width: Rules.carriage(r), speed: r.V, speedEst: false, isEnd: best.pr.s < 0.5 || best.pr.s > calc(r).length - 0.5 },
       label: `${r.name}・${station(best.pr.s)}`,
     };
   }
@@ -702,6 +702,7 @@ function renderMap() {
   if (!ui.dragging) renderHandles();
   $('#zoomLabel').textContent = 'z ' + map.getZoom().toFixed(1);
   if (typeof TrafficUI !== 'undefined') TrafficUI.render();
+  if (typeof StudyUI !== 'undefined') StudyUI.render();
 }
 
 /* ハンドル（IP・中点・下絵） */
@@ -995,6 +996,7 @@ function schedulePanel() { if (!panelRaf) panelRaf = requestAnimationFrame(() =>
 function refresh() {
   renderMap(); renderPanels();
   if (typeof TrafficUI !== 'undefined') TrafficUI.schedule();
+  if (typeof StudyUI !== 'undefined') StudyUI.schedule();
   // 線形を変えると現況地盤は取り直しになる。計画縦断がある道路は自動で取り直す
   const r = selRoad();
   if (r && r.vips && !ui.dragging && groundWanted.has(r.id) && !ui.profiles.has(r.id) && !groundLoading.has(r.id)) setTimeout(() => { if (!ui.profiles.has(r.id) && roadById(r.id)) loadProfile(r); }, 300);
