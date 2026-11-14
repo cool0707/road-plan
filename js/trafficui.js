@@ -406,8 +406,9 @@ const TrafficUI = (() => {
   }
   /* 道路交通センサス（同梱データ）: 表示範囲の区間を読み込む */
   async function fetchCensus() {
-    const b = map.getBounds().pad(0.05);
-    for (const ex of project.existing) { b.extend([ex.bbox[0], ex.bbox[1]]); b.extend([ex.bbox[2], ex.bbox[3]]); } // 読み込んである既存道路の範囲まで
+    let b = map.getBounds().pad(0.05);
+    for (const ex of project.existing) { const bb = ex.bbox; if (bb && bb.every(Number.isFinite) && bb[0] <= bb[2]) { b.extend([bb[0], bb[1]]); b.extend([bb[2], bb[3]]); } } // 読み込んである既存道路の範囲まで（壊れた範囲は無視）
+    if (b.getNorth() - b.getSouth() > 1 || b.getEast() - b.getWest() > 1) b = map.getBounds().pad(0.05); // 既存道路が広がりすぎているときは表示範囲だけ
     const res = await busy('道路交通センサス（R3）の区間データを読み込み中…', async () => {
       if (!st.censusIndex) { const r = await fetch('data/census-r3/index.json'); if (!r.ok) throw new Error('同梱データがありません'); st.censusIndex = await r.json(); st.censusIndex.set = new Set(st.censusIndex.tiles); }
       const ix = st.censusIndex, n = 2 ** ix.z, tx = (lng) => Math.floor(((lng + 180) / 360) * n), ty = (lat) => { const r = (lat * Math.PI) / 180; return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n); };
