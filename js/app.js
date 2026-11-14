@@ -938,7 +938,7 @@ function vplanOf(road) {
   }
   al.curves.forEach((c) => {
     if (!c || c.none || c.sTS == null) return;
-    const g = Geom.maxGradeIn(pf, c.sTS, c.sST) * 100, e = Rules.curveSpeed(road, c.R).e * 100;
+    const g = Geom.maxGradeIn(pf, c.sTS, c.sST) * 100, e = Math.abs(Rules.superelevation(road, c.ip, c.R).e) * 100;
     out.comb.push({ ip: c.ip, grade: g, e, value: Math.hypot(g, e) });
   });
   return out;
