@@ -14,6 +14,7 @@ const ICON = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.500 9.500a2.500 2.500 0 115 0c0 1.500-2.500 2-2.500 4"/><circle cx="12" cy="17" r=".6"/>',
+  cube: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
   target: '<circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
 };
 const ic = (n) => `<svg class="ic" viewBox="0 0 24 24">${ICON[n]}</svg>`;
@@ -335,7 +336,7 @@ function renderChrome() {
   $('#toolbar').innerHTML = tools.map(([t, tip]) => `<button class="${ui.tool === t ? 'on' : ''}" data-act="tool-${t}" data-tip="${tip}">${ic(t)}</button>`).join('')
     + `<span class="sep"></span><button data-act="fetch-osm" data-tip="既存道路を取得 (OSM)">${ic('roads')}</button><button data-act="add-image" data-tip="下絵画像を追加">${ic('image')}</button>`;
   const u = $('[data-act=undo]'), r = $('[data-act=redo]');
-  u.innerHTML = ic('undo'); r.innerHTML = ic('redo'); $('[data-act=help]').innerHTML = ic('help');
+  u.innerHTML = ic('undo'); $('[data-act=view3d]').innerHTML = ic('cube') + '<span>3D</span>'; r.innerHTML = ic('redo'); $('[data-act=help]').innerHTML = ic('help');
   u.disabled = !hist.undo.length; r.disabled = !hist.redo.length;
   if (document.activeElement !== $('#projName')) $('#projName').value = project.name;
 }
@@ -568,6 +569,7 @@ function act(a, el) {
     case 'export-csv': return download(project.name + '_線形計算書.csv', '﻿' + toCSV(), 'text/csv');
     case 'export-dxf': return download(project.name + '.dxf', toDXF(), 'application/dxf');
     case 'help': return showHelp();
+    case 'view3d': return V3D.toggle();
     case 'close-modal': $('#modal').hidden = true; return;
   }
 }
@@ -673,6 +675,7 @@ function showHelp() {
       <li><kbd>V</kbd> 選択: 道路をクリック → IP ハンドルをドラッグ。線上の小さな丸をクリックすると IP を追加。<kbd>Delete</kbd> で削除。</li>
       <li>右パネルの数値はラベルを左右にドラッグ、または <kbd>↑</kbd><kbd>↓</kbd>（<kbd>Shift</kbd> で 10 倍）で増減できます。</li>
       <li>地図左上の検索欄（<kbd>/</kbd>）で地名・住所・施設名・緯度経度を検索。住所は国土地理院、施設名などは OpenStreetMap（Nominatim）の結果を統合して表示します。</li>
+      <li><b>3D</b>（上部バーの立方体ボタン）: 地理院の標高タイルで地形を作り、計画道路を計画高・片勾配・切土／盛土のり面つきで立体表示。ドラッグで回転・右ドラッグで移動・ホイールでズーム。「影付きで撮影」で太陽の向きを決めた影付きの高解像度 PNG を保存できます（<kbd>Esc</kbd> で閉じる）。木は航空写真から森を自動判定して植えるほか、「塗って植える」「消す」で 3D 上をなぞって範囲を指定できます（塗った範囲はプロジェクトに保存）。</li>
       <li><kbd>M</kbd> 計測、<kbd>Ctrl</kbd>+<kbd>Z</kbd> 元に戻す、<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> やり直す。</li></ul>
     <h4>線形要素</h4><ul>
       <li><span class="tag line"></span>直線 <span class="tag clothoid"></span>クロソイド（A² = R·L） <span class="tag arc"></span>円曲線。主要点は BP / KA / KE / BC / EC / EP、測点は 20m ピッチ（No.）。</li>
