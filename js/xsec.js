@@ -162,6 +162,7 @@
     return elevation(ll);
   }
 
+  root.xsecGround = groundAt; // 計画検討（土工量）でも同じ地盤高を使う
   const roadKey = (r) => JSON.stringify([r.ips, r.vips, r.lanes, r.laneW, r.shoulderW, r.sidewalkW, r.V, r.cls]);
   async function modelOf(road) {
     const key = roadKey(road), c = xs.models.get(road.id);
