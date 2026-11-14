@@ -17,7 +17,7 @@ function newProject() {
   return {
     version: 1, name: '無題の道路計画', origin: null, roads: [], existing: [], image: null,
     base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, healTol: 8, view: null, googleKey: '',
-    defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false },
+    defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false, snow: '', bike: false },
   };
 }
 function loadProject() {

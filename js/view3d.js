@@ -326,14 +326,14 @@ const V3D = (() => {
     let h = 0;
     rows.forEach((r) => { while (h < high.length - 1 && high[h] < r.s - 10) h++; r.bridge = high.length > 0 && Math.abs(high[h] - r.s) <= 10; });
     // 片勾配: 曲線区間で内側へ傾ける（緩和曲線で曲率に比例してすりつけ）。直線部は 2% の拝み勾配。
-    // 値は IP に設定した片勾配（なければ必要片勾配から自動。自動で 2% 以下なら拝み勾配のまま）
+    // 値は IP に設定した片勾配（なければ必要片勾配から自動で 2% 以上。自動で、片勾配を付さなくてよい曲線半径以上なら拝み勾配のまま）
     rows.forEach((r) => {
       let c = null;
       for (const cv of al.curves) if (cv && !cv.none && cv.sTS != null && r.s >= cv.sTS - 1e-6 && r.s <= cv.sST + 1e-6) { c = cv; break; }
       let inner = -0.02, outer = -0.02;
       if (c && Math.abs(r.k) > 1e-9) {
         const se = Rules.superelevation(road, c.ip, c.R), e = se.e, t = Math.min(1, Math.abs(r.k) * c.R);
-        if (se.set || e > 0.02) { inner = -(0.02 + (e - 0.02) * t); outer = -0.02 + (e + 0.02) * t; }
+        if (!se.crown) { inner = -(0.02 + (e - 0.02) * t); outer = -0.02 + (e + 0.02) * t; }
       }
       const leftInner = r.k > 0;
       r.slope = leftInner ? [inner, outer] : [outer, inner]; // [左, 右]: 外向きの勾配
@@ -413,7 +413,7 @@ const V3D = (() => {
     const mean = cnt ? sum / cnt : 0;
     for (let k = 0; k < N; k++) { const sea = raw[k] === SEA; H0[k] = H[k] = sea ? 0 : raw[k] ?? mean; if (sea) earth[k * 4 + 3] = 1; } // 海は標高 0 の水面
     if (exX.length) { carveExisting(ex, { nx, ny, sp, H, gx, gy }, exX); H0.set(H); } // 既存道路の路盤（計画の切盛とは区別する）
-    // 切盛: 路面の下 0.4m まで掘る／盛る。路肩（歩道）端から 盛土 1:1.5・切土 1:1.0
+    // 切盛: 路面の下 0.4m まで掘る／盛る。路肩（歩道）端から 盛土 1:1.5・切土 1:1.0（Rules.FILL_SLOPE / CUT_SLOPE。照査の のり面勾配 と共通）
     for (const R of roadsX) {
       const rows = R.rows, reach = R.E + SLOPE_MAX + SLOPE_FADE;
       let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
@@ -431,8 +431,8 @@ const V3D = (() => {
         const lat = Math.max(0, Math.abs(d) - R.E), u = over > 0 ? Math.hypot(lat, over) : lat;
         if (u <= 1e-6) { H[k] = top; earth[k * 4 + 3] = 0; continue; }
         const w = u <= SLOPE_MAX ? 1 : Math.max(0, 1 - (u - SLOPE_MAX) / SLOPE_FADE); // のり長が長すぎる所は自然地形へなじませる
-        if (h < top) { const f = h + (top - u / 1.5 - h) * w; if (f > h) { H[k] = f; earth[k * 4] = Math.max(earth[k * 4], Math.min(1, (f - h) / 0.6) * Math.min(1, w * 1.5)); earth[k * 4 + 3] = 0; } }
-        else { const c = h + (top + u * 1.0 - h) * w; if (c < h) { H[k] = c; earth[k * 4 + 1] = Math.max(earth[k * 4 + 1], Math.min(1, (h - c) / 0.6) * Math.min(1, w * 1.5)); } }
+        if (h < top) { const f = h + (top - u / Rules.FILL_SLOPE - h) * w; if (f > h) { H[k] = f; earth[k * 4] = Math.max(earth[k * 4], Math.min(1, (f - h) / 0.6) * Math.min(1, w * 1.5)); earth[k * 4 + 3] = 0; } }
+        else { const c = h + (top + u / Rules.CUT_SLOPE - h) * w; if (c < h) { H[k] = c; earth[k * 4 + 1] = Math.max(earth[k * 4 + 1], Math.min(1, (h - c) / 0.6) * Math.min(1, w * 1.5)); } }
       }
     }
     return { nx, ny, sp, H, H0, earth, gx, gy, mean, tex: texInfo, exX };

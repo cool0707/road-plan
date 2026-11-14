@@ -148,7 +148,7 @@ const cell = (key, val, step, dec, title = '') => `<input class="cell" data-key=
 
 /* 縦断計画（計画高）ブロック */
 function vplanBlock(road) {
-  const gr = ui.profiles.get(road.id), al = calc(road), t = Rules.T[road.V], vp = vplanOf(road);
+  const gr = ui.profiles.get(road.id), al = calc(road), t = Rules.T[road.V], gl = Rules.gradeLimit(road), vp = vplanOf(road);
   const groundBtn = gr ? '' : `<div class="row one"><button class="btn wide" data-act="profile" title="中心線に沿った地盤高を国土地理院の標高タイルから取得し、切土・盛土を確認">現況地盤の標高を取得（地理院 DEM）</button></div>`;
   if (!vp) {
     return (gr ? profileSvg(road, 276, 110, { small: true }) + groundSummary(road) + '<div style="height:8px"></div>' : '')
@@ -162,7 +162,7 @@ function vplanBlock(road) {
     const vcTitle = c && Math.abs(c.dg) > 0.0005 ? `${c.crest ? '凸形' : '凹形'} R=${isFinite(c.R) ? Math.round(c.R) : '—'}m（規定 R≥${c.crest ? t.vR : t.vRc}m・L≥${t.vL}m）` : '勾配差なし';
     return `<tr><td>${nm}</td><td>${end ? fmt(p.s, 1) : cell(`vip.${i}.s`, v.s, 1, 1, '追加距離 [m]')}</td><td>${cell(`vip.${i}.z`, v.z, 0.1, 2, '計画高 [m]')}</td>`
       + `<td>${end ? '<span class="muted">—</span>' : cell(`vip.${i}.VCL`, v.VCL, 5, 0, '縦断曲線長 [m] ・ ' + vcTitle)}</td>`
-      + `<td class="${i < n - 1 && Math.abs(pf.grades[i]) * 100 > t.grade + 1e-9 ? 'bad' : ''}">${i < n - 1 ? sgnPct(pf.grades[i]) : ''}</td>`
+      + `<td class="${i < n - 1 && Math.abs(pf.grades[i]) * 100 > gl.std + 1e-9 ? 'bad' : ''}">${i < n - 1 ? sgnPct(pf.grades[i]) : ''}</td>`
       + `<td>${end ? '' : `<button class="ibtn xs" data-act="vip-del" data-i="${i}" title="この変化点を削除">${ic('trash')}</button>`}</td></tr>`;
   }).join('');
   const gmax = Math.max(...pf.grades.map((g) => Math.abs(g))) * 100, zs = pf.pts.map((p) => p.z);
@@ -171,7 +171,7 @@ function vplanBlock(road) {
     <table class="els vtbl"><tr><th>点</th><th>測点 m</th><th>計画高 m</th><th title="縦断曲線長">VCL m</th><th title="次の点までの勾配">勾配</th><th></th></tr>${rows}</table>
     <div class="row" style="margin-top:6px"><button class="btn" data-act="vip-add" title="最も長い区間の中央に変化点を追加（縦断図ではダブルクリックでも追加）">変化点を追加</button><button class="btn" data-act="vip-fit" title="勾配差に応じて、縦断曲線の半径・長さの規定を満たす曲線長に揃える">曲線長を推奨値に</button></div>
     ${gr && (road.conn.start || road.conn.end) ? `<div class="row one"><button class="btn" data-act="vip-ends" title="接続している端点の計画高を現況地盤高（既存道路の路面高の近似）に合わせる">接続端を地盤高に合わせる</button></div>` : ''}
-    ${kv([['計画高', `${fmt(Math.min(...zs), 2)} 〜 ${fmt(Math.max(...zs), 2)} m`], ['最大縦断勾配', `${fmt(gmax, 2)} %（規定 ${t.grade}%・特例 ${t.gradeEx}%）`],
+    ${kv([['計画高', `${fmt(Math.min(...zs), 2)} 〜 ${fmt(Math.max(...zs), 2)} m`], ['最大縦断勾配', `${fmt(gmax, 2)} %（規定 ${gl.std}%・特例 ${gl.ex}%）`],
     vp.cut || vp.fill ? ['最大切土 / 盛土', `${fmt(vp.cut ? vp.cut.d : 0, 2)} / ${fmt(vp.fill ? vp.fill.d : 0, 2)} m`] : null,
     endTxt('start') ? ['起点 計画高−地盤高', endTxt('start')] : null, endTxt('end') ? ['終点 計画高−地盤高', endTxt('end')] : null])}
     <div style="height:8px"></div>${groundBtn}
@@ -230,7 +230,7 @@ function profileSvg(road, W, H, o = {}) {
     if (!sm) {
       pf.grades.forEach((g, k) => {
         const a = pf.pts[k], b = pf.pts[k + 1], xm = (X(a.s) + X(b.s)) / 2, ym = (Y(a.z) + Y(b.z)) / 2;
-        if (X(b.s) - X(a.s) > 54) out += `<text x="${f(xm)}" y="${f(ym - 7)}" class="gl${Math.abs(g) * 100 > Rules.T[road.V].grade + 1e-9 ? ' bad' : ''}" text-anchor="middle">${sgnPct(g)}　${fmt(b.s - a.s, 1)}m</text>`;
+        if (X(b.s) - X(a.s) > 54) out += `<text x="${f(xm)}" y="${f(ym - 7)}" class="gl${Math.abs(g) * 100 > Rules.gradeLimit(road).std + 1e-9 ? ' bad' : ''}" text-anchor="middle">${sgnPct(g)}　${fmt(b.s - a.s, 1)}m</text>`;
       });
     }
     pf.pts.forEach((p, i) => {
@@ -273,7 +273,7 @@ function ipBlock(road, al) {
       <div class="row">${num('A2', 'ip.A2', ip.A2, { step: 1, dec: 1, title: '終点側クロソイドパラメータ' })}${num('L2', 'ip.L2', ip.R > 0 ? (ip.A2 * ip.A2) / ip.R : 0, { unit: 'm', step: 1, dec: 2, title: '終点側クロソイド長' })}</div>`;
     if (!c.none) {
       const sp = Rules.curveSpeed(road, c.R), se = Rules.superelevation(road, i, c.R);
-      h += `<div class="row"><label class="fld" title="この曲線の片勾配（円曲線部の値。緩和曲線で直線部の横断勾配 2% からすりつけ）。空欄にすると必要片勾配から自動（2%〜最大片勾配）。3D ビューの路面・照査・合成勾配に使います"><span class="lb">片勾配</span><input data-key="ip.e" data-step="0.5" data-dec="1" value="${ip.e != null ? fmt(ip.e, 1) : ''}" placeholder="自動 ${fmt(sp.e * 100, 1)}" inputmode="decimal"><span class="un">%</span></label>${num('走行可能', '', Math.floor(se.vSafe), { ro: true, unit: 'km/h', dec: 0, title: 'この片勾配で走行できる速度 √(127R(i+f))' })}</div>`;
+      h += `<div class="row"><label class="fld" title="この曲線の片勾配（円曲線部の値。緩和曲線で直線部の横断勾配 2% からすりつけ）。空欄にすると必要片勾配から自動（2%〜最大片勾配 ${fmt(Rules.emaxOf(road) * 100, 0)}%。片勾配を付さなくてよい R≥${t.Rnc}m は拝み勾配のまま）。3D ビューの路面・照査・合成勾配に使います"><span class="lb">片勾配</span><input data-key="ip.e" data-step="0.5" data-dec="1" value="${ip.e != null ? fmt(ip.e, 1) : ''}" placeholder="${se.crown && !se.set ? '自動 なし' : '自動 ' + fmt(sp.e * 100, 1)}" inputmode="decimal"><span class="un">%</span></label>${num('走行可能', '', Math.floor(se.vSafe), { ro: true, unit: 'km/h', dec: 0, title: 'この片勾配で走行できる速度 √(127R(i+f))' })}</div>`;
       h += kv([['接線長 TL1 / TL2', `${fmt(c.T1)} / ${fmt(c.T2)} m`], ['円曲線長 Lc', `${fmt(c.Lc)} m`], ['曲線長 CL（緩和含む）', `${fmt(c.CL)} m`],
         ['移程量 ΔR1 / ΔR2', `${fmt(c.p1, 3)} / ${fmt(c.p2, 3)} m`], ['接線角 τ1 / τ2', `${fmt(deg(c.tau1), 2)}° / ${fmt(deg(c.tau2), 2)}°`],
         ['必要片勾配', `${fmt(Math.max(0, sp.need) * 100, 1)} %`], ['走行可能速度（最大片勾配時）', `約 ${Math.floor(sp.vMax)} km/h`]]);
@@ -295,6 +295,8 @@ function roadPanel(road) {
     + sec('道路', `<div class="row one"><label class="fld"><span class="lb">名称</span><input type="text" data-key="road.name" value="${esc(road.name)}"></label></div>
       <div class="row one">${sel('区分', 'road.cls', road.cls, Object.entries(Rules.CLASSES).map(([k, v]) => [k, v.name]))}</div>
       <div class="row one">${sel('設計速度', 'road.V', road.V, speedOpts)}</div>
+      <div class="row one">${sel('地域', 'road.snow', road.snow || '', Object.entries(Rules.SNOW))}</div>
+      ${road.cls[0] === '3' ? `<label class="chk" title="第3種の道路で自転車道・自転車歩行者道を設けない場合、最大片勾配は 6%（道路構造令 第16条）"><input type="checkbox" data-key="road.bike"${road.bike ? ' checked' : ''}>自転車道・自転車歩行者道あり</label>` : ''}
       <label class="chk" title="建築基準法 第42条第1項第5号（位置指定道路）の基準もあわせて照査"><input type="checkbox" data-key="road.shitei"${road.shitei ? ' checked' : ''}>位置指定道路の基準も照査</label>`,
       `<button class="ibtn" data-act="zoom-road" title="全体を表示">${ic('target')}</button><button class="ibtn" data-act="del-road" title="道路を削除">${ic('trash')}</button>`)
     + sec('平面線形', kv([['延長', `${fmt(al.length)} m`], ['IP 数（曲線）', `${road.ips.length - 2 < 0 ? 0 : al.curves.filter((x) => x && !x.none).length}`], ['最小曲線半径', (() => { const r = al.curves.filter((x) => x && !x.none).map((x) => x.R); return r.length ? fmt(Math.min(...r), 1) + ' m' : '—'; })()]])
@@ -359,6 +361,8 @@ function setValue(key, raw, live) {
     case 'road.cls': road.cls = raw; applyClass(road); break;
     case 'road.V': road.V = +raw; break;
     case 'road.shitei': road.shitei = !!raw; break;
+    case 'road.snow': road.snow = raw in Rules.SNOW ? raw : ''; break;
+    case 'road.bike': road.bike = !!raw; break;
     case 'road.lanes': set(road, 'lanes', isFinite(v) ? Math.max(1, Math.min(8, Math.round(v))) : null); break;
     case 'road.laneW': set(road, 'laneW', pos(v, 2)); break;
     case 'road.shoulderW': set(road, 'shoulderW', pos(v)); break;
@@ -403,7 +407,7 @@ function setValue(key, raw, live) {
   }
   if (road) {
     normalize(road);
-    if (key.startsWith('road.')) project.defaults = { cls: road.cls, V: road.V, lanes: road.lanes, laneW: road.laneW, shoulderW: road.shoulderW, sidewalkW: road.sidewalkW, shitei: !!road.shitei };
+    if (key.startsWith('road.')) project.defaults = { cls: road.cls, V: road.V, lanes: road.lanes, laneW: road.laneW, shoulderW: road.shoulderW, sidewalkW: road.sidewalkW, shitei: !!road.shitei, snow: road.snow || '', bike: !!road.bike };
     if (key.startsWith('ip.') || key.startsWith('conn.')) ui.profiles.delete(road.id);
   }
   if (key.startsWith('img.')) syncImageLayer();
@@ -700,7 +704,9 @@ function showHelp() {
       <li>縦断曲線は VIP を中心とする 2 次放物線。「曲線長を推奨値に」で縦断曲線の半径・長さの規定を満たす長さに揃えます。</li>
       <li>縦断図には計画高（赤）・現況地盤（青）・盛土（黄）・切土（茶）を表示。地図上で道路にカーソルを置くと、その測点の計画高と切盛高がステータスに出ます。</li></ul>
     <h4>照査</h4><ul>
-      <li>道路構造令: 設計速度(13条)・幅員(5,8,11条)・最小曲線半径(15条)・曲線長／片勾配(16条)・緩和区間(18条)・視距(19条)・縦断勾配(20条)・縦断曲線(22条)・合成勾配(25条)・交差角(27条)。</li>
+      <li>道路構造令: 設計速度(13条)・幅員(5,8,11条)・最小曲線半径(15条)・片勾配(16条)・緩和区間と片勾配のすりつけ(18条)・視距(19条)・縦断勾配(20条)・登坂車線(21条)・縦断曲線(22条)・横断勾配(24条)・合成勾配(25条)・交差角と取付部(27条)。曲線長は「解説と運用」。</li>
+      <li>勾配の上限は「道路」の <b>区分</b>・<b>地域</b>（積雪寒冷の度）・<b>自転車道の有無</b>で変わります: 最大片勾配は 第1〜3種 10%（積雪寒冷地域 8%・度がはなはだしい地域 6%、自転車道等のない第3種 6%）・第4種 6%、縦断勾配の特例値は 第1〜3種 +3%・第4種 +2%、合成勾配は積雪寒冷の度がはなはだしい地域 8%。</li>
+      <li>歩道の縦断勾配（道路移動等円滑化基準 第6条: 5%・やむを得ない場合 8%）、切土・盛土の のり面勾配（道路土工指針の標準のり面勾配: 3D は 盛土 1:1.5・切土 1:1.0）も目安として確認します。</li>
       <li>接続部: 既存道路の速度から最初の曲線までの減速距離（進入速度）を確認。</li>
       <li>位置指定道路（建築基準法施行令 第144条の4）: 幅員 4m・袋路 35m・隅切り・勾配 12%。</li>
       <li>結果は簡易照査です。最終判断は条文・道路管理者の基準で行ってください。</li></ul>
