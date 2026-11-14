@@ -36,16 +36,22 @@ function save() {
   }
 }
 
-/* undo / redo: 計画道路と下絵配置のスナップショット */
+/* undo / redo: 計画道路・下絵配置・既存道路のスナップショット
+ * 既存道路は件数が多いので配列の参照だけを持つ（要素は書き換えず、変更時は常に新しい配列・新しい要素を作る） */
 const hist = { undo: [], redo: [], last: null };
-const snapshot = () => JSON.stringify({ roads: project.roads, image: project.image });
+const snapshot = () => ({ s: JSON.stringify({ roads: project.roads, image: project.image }), ex: project.existing });
 function commit() {
   hist.undo.push(hist.last); if (hist.undo.length > 100) hist.undo.shift();
   hist.redo = []; hist.last = snapshot();
   save(); refresh();
 }
-function restore(s) {
-  const o = JSON.parse(s); project.roads = o.roads; project.image = o.image;
+function restore(h) {
+  const o = JSON.parse(h.s); project.roads = o.roads; project.image = o.image;
+  if (project.existing !== h.ex) {
+    project.existing = h.ex;
+    if (ui.sel && ui.sel.type === 'existing' && !project.existing.some((e) => e.id === ui.sel.id)) ui.sel = null;
+    renderExisting();
+  }
   if (ui.sel && ui.sel.type === 'road' && !roadById(ui.sel.id)) ui.sel = null;
   if (ui.sel && ui.sel.type === 'road' && ui.sel.ip != null && ui.sel.ip >= roadById(ui.sel.id).ips.length) ui.sel.ip = null;
   ui.profiles.clear(); save(); syncImageLayer(); refresh();
@@ -317,7 +323,7 @@ function addExisting(list) {
     idx.add(xy); m.set(e.id, e);
   });
   project.existing = [...m.values()]; project.existingVisible = true;
-  save(); renderExisting(); renderPanels();
+  commitEx();
   return { added: list.length - skipped, skipped };
 }
 function dedupeExisting() {
@@ -330,13 +336,48 @@ function dedupeExisting() {
   const ids = new Set(keep.map((e) => e.id));
   project.existing = project.existing.filter((e) => ids.has(e.id));
   if (ui.sel && ui.sel.type === 'existing' && !ids.has(ui.sel.id)) ui.sel = null;
-  save(); renderExisting(); refresh();
+  if (n) commitEx();
   toast(n ? `重複していた既存道路 ${n} 本を除去しました` : '重複している既存道路はありません');
 }
+function commitEx() { renderExisting(); commit(); }
 function deleteExisting(id) {
   project.existing = project.existing.filter((e) => e.id !== id);
   if (ui.sel && ui.sel.type === 'existing' && ui.sel.id === id) ui.sel = null;
-  save(); renderExisting(); refresh();
+  commitEx();
+}
+function clearExisting() {
+  if (!project.existing.length) return;
+  project.existing = [];
+  if (ui.sel && ui.sel.type === 'existing') ui.sel = null;
+  commitEx();
+}
+/* 既存道路の区間: 交差点（他の既存道路との交差・接続）と屈曲点で区切る */
+function existingBreaks(ex) {
+  const xy = ex.pts.map((p) => P.toXY(p)), b = ex.bbox, pad = 0.0001;
+  const others = project.existing.filter((o) => o !== ex && !(o.bbox[0] > b[2] + pad || o.bbox[2] < b[0] - pad || o.bbox[1] > b[3] + pad || o.bbox[3] < b[1] - pad))
+    .map((o) => o.pts.map((p) => P.toXY(p)));
+  return { xy, breaks: Geom.polyBreaks(xy, others) };
+}
+function existingPiece(ex, at) {
+  const { xy, breaks } = existingBreaks(ex), u = Geom.polyNearest(xy, P.toXY(at)), pc = Geom.pieceAt(breaks, u);
+  return { piece: pc, whole: pc[0] === 0 && pc[1] === ex.pts.length - 1, len: Geom.polyLenTo(xy, pc[1]) - Geom.polyLenTo(xy, pc[0]), total: Geom.polyLen(xy) };
+}
+/* 選択中の区間だけを削除し、残りを前後の別々の既存道路として残す */
+function deleteExistingPiece() {
+  const sel = ui.sel, ex = sel && sel.type === 'existing' && project.existing.find((e) => e.id === sel.id);
+  if (!ex) return;
+  const pc = sel.piece || [0, ex.pts.length - 1];
+  if (pc[0] === 0 && pc[1] === ex.pts.length - 1) return deleteExisting(ex.id);
+  const base = ex.id.replace(/~\w+$/, ''), parts = [];
+  [[0, pc[0]], [pc[1], ex.pts.length - 1]].forEach(([u0, u1]) => {
+    const pts = Geom.polySlice(ex.pts, u0, u1);
+    if (pts.length < 2 || Geom.polyLen(pts.map((p) => P.toXY(p))) < 0.5) return;
+    parts.push(Object.assign({}, ex, { id: `${base}~${uid()}`, pts, bbox: bboxOf(pts) }));
+  });
+  const i = project.existing.indexOf(ex);
+  project.existing = [...project.existing.slice(0, i), ...parts, ...project.existing.slice(i + 1)];
+  ui.sel = null;
+  commitEx();
 }
 const dupMsg = (r) => (r.skipped ? `（重複 ${r.skipped} 本は除外）` : '');
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
@@ -394,7 +435,19 @@ function renderExisting() {
   const wide = project.existingWidth, ppm = wide ? pxPerM() : 0;
   for (const ex of project.existing) {
     const on = ex.id === selId;
-    const click = (e) => { if (ui.tool !== 'select') return; L.DomEvent.stopPropagation(e); select({ type: 'existing', id: ex.id, at: [e.latlng.lat, e.latlng.lng] }); };
+    const click = (e) => {
+      if (ui.tool !== 'select') return; L.DomEvent.stopPropagation(e);
+      const at = [e.latlng.lat, e.latlng.lng];
+      select(Object.assign({ type: 'existing', id: ex.id, at }, existingPiece(ex, at)));
+    };
+    if (on && ui.sel.piece && !ui.sel.whole) { // 選択区間だけを強調
+      const pts = Geom.polySlice(ex.pts, ui.sel.piece[0], ui.sel.piece[1]);
+      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: '#0d99ff', weight: wide ? Math.max(3, ex.width * ppm) : 3, opacity: wide ? 0.2 : 0.45, lineCap: 'butt', lineJoin: 'round' })
+        .on('click', click).addTo(gExisting);
+      L.polyline(pts, { renderer: exRenderer, pane: 'existing', color: '#0d99ff', weight: wide ? Math.max(6, ex.width * ppm) : 7, opacity: wide ? 0.55 : 0.95, lineCap: 'butt', lineJoin: 'round' })
+        .on('click', click).addTo(gExisting);
+      continue;
+    }
     if (wide) { // 幅員どおりの帯 + 中心線
       L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0f9d8f', weight: Math.max(3, ex.width * ppm), opacity: on ? 0.45 : 0.3, lineCap: 'butt', lineJoin: 'round' })
         .on('click', click).addTo(gExisting);

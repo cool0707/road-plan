@@ -61,3 +61,20 @@ test('照査: 最小曲線半径と緩和区間', () => {
   const ok = Rules.check(road, G.computeAlignment(road.ips));
   assert.ok(!ok.some((r) => r.level === 'error'), JSON.stringify(ok.filter((r) => r.level === 'error')));
 });
+
+test('既存道路の区間分割: 交差点・屈曲点で区切る', () => {
+  // 東へ 100m → 北へ 50m（L 字）。x=40 で南北道路が横断
+  const xy = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 50 }];
+  const cross = [{ x: 40, y: -20 }, { x: 40, y: 20 }];
+  const br = G.polyBreaks(xy, [cross]);
+  assert.strictEqual(br.length, 4);
+  near(br[1], 0.4, 1e-9, '交差'); assert.strictEqual(br[2], 1); assert.strictEqual(br[3], 2);
+  assert.deepStrictEqual(G.pieceAt(br, G.polyNearest(xy, { x: 70, y: 3 })), [br[1], 1]);
+  const pts = xy.map((p) => [p.y, p.x]);
+  const part = G.polySlice(pts, br[1], 1);
+  assert.deepStrictEqual(part, [[0, 40], [0, 100]]);
+  assert.deepStrictEqual(G.polySlice(pts, 0.4, 2), [[0, 40], [0, 100], [50, 100]]);
+  // 緩い折れ（10°）では区切らない
+  const gentle = [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 100, y: 50 * Math.tan(10 * Math.PI / 180) }];
+  assert.deepStrictEqual(G.polyBreaks(gentle, []), [0, 2]);
+});
