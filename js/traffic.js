@@ -41,7 +41,7 @@
     aon: { name: '最短経路配分（All-or-Nothing）', note: '混雑を考えず、全量を自由走行時の最短経路に流す。容量に余裕がある地域の概算用' },
     div: { name: '転換率法（時間比）', note: '計画道路を使う経路と使わない経路の所要時間比から、転換率 P=1/(1+比^6) で計画道路へ移る量を決める簡便法' },
   };
-  const DEFAULTS = { period: 'day', od: 'entropy', assign: 'ue', area: 0, alpha: 0.48, beta: 2.82, splits: 5, theta: 0.5, gamma: 0.8, kappa: 6, growth: 1, internal: 1, maxZones: 70, crossPlanned: true };
+  const DEFAULTS = { period: 'day', od: 'entropy', assign: 'ue', area: 0, alpha: 0.48, beta: 2.82, splits: 5, theta: 0.5, gamma: 0.8, kappa: 6, growth: 1, internal: 1, maxZones: 90, crossPlanned: true, scope: 'main', motorway: false };
 
   let M = (typeof TRAFFIC_MODEL !== 'undefined' && TRAFFIC_MODEL) || null;
   if (!M && typeof require === 'function') { try { M = require('./trafficmodel.js'); } catch (e) { M = null; } }
@@ -57,7 +57,7 @@
     if (/高速/.test(c)) return 'mw';
     if (/国道/.test(c)) return 'tr';
     if (/都道府県/.test(c)) return 'pr';
-    return width >= 13 ? 'se' : width >= 5.5 ? 'un' : 're';
+    return width >= 13 ? 'te' : width >= 5.5 ? 'un' : 're'; // 市区町村道（地理院）: 幅員で幹線・一般・生活道路に分ける
   }
   function planKind(road) { // 計画道路: 道路構造令の種級と車線数から
     const c = String(road.cls || '');
@@ -76,8 +76,9 @@
   };
   const LOCAL_VOL = { te: 0.45, un: 0.2 }; // 幹線市町村道・一般道の交通量は都道府県道（2車線）の何割か
   const LOCAL_DAY = [1500, 800, 500, 200, 60]; // 生活道路の日交通量（両方向）の目安 [台/日]: 沿道状況 1〜5
-  const LOCAL_CAP = { te: 0.8, un: 0.6, re: 0.45, sv: 0.3 };
-  const LOCAL_V0 = { te: [20, 22, 28, 35, 35], un: [18, 20, 25, 30, 30], re: [15, 17, 20, 25, 25], sv: [10, 10, 12, 15, 15] };
+  const LOCAL_CAP = { te: 0.9, un: 0.8, re: 0.8, sv: 0.5 }; // 交通容量: 都道府県道（同じ沿道状況・車線数）の何割か
+  const LOCAL_V0 = { te: [13, 15, 22, 30, 30], un: [9, 11, 18, 25, 25], re: [6, 7, 12, 18, 18], sv: [5, 5, 8, 10, 10] }; // 自由走行速度 [km/h]: 沿道状況 1〜5。細い道路は通り抜けに使われにくいよう低めに置く
+  const NODE_DELAY = { te: 2, un: 4, re: 6, sv: 8 }; // 細い道路の交差点での一時停止・徐行 [秒/リンク]
   const GEN_RATE = [2.0, 1.0, 0.6, 0.2, 0.05]; // 域内の発生集中 [トリップエンド/日/生活道路 1m]: 沿道状況 1〜5
 
   /* 換算係数（昼夜率・ピーク率など）: 道路種別グループ×沿道状況の全国中央値 */
@@ -142,12 +143,12 @@
   function buildNetwork(roads, opt = {}) {
     const P = roads.map((r) => r.xy.map((p) => [p.x, p.y])).map((p) => p.filter((q, i) => i === 0 || hyp(q[0] - p[i - 1][0], q[1] - p[i - 1][1]) > 0.01));
     const ok = (ri) => P[ri].length >= 2;
-    const grid = segGrid(40), ins = roads.map(() => []);
+    const grid = segGrid(40), ins = roads.map(() => []), ext = [];
     P.forEach((p, ri) => { if (ok(ri)) for (let s = 0; s < p.length - 1; s++) grid.add(p[s][0], p[s][1], p[s + 1][0], p[s + 1][1], ri * 1e6 + s); });
     /* 端点が他の道路の途中に載っているとき（T字・計画道路の接続）は、相手の線にも頂点を入れてつなぐ */
     P.forEach((p, ri) => {
       if (!ok(ri)) return;
-      const tol = roads[ri].planned ? 6 : 2.5;
+      const tol = roads[ri].planned ? 6 : roads[ri].kind === 'mw' ? 0.6 : 4; // 高架の高速道路は、下を通る道路に誤ってつながないよう厳しく
       for (const end of [0, p.length - 1]) {
         const e = p[end]; let best = null;
         grid.near(e[0], e[1], tol, (v) => {
@@ -156,11 +157,28 @@
           const q = P[rj], pr = projSeg(e[0], e[1], q[s][0], q[s][1], q[s + 1][0], q[s + 1][1]);
           if (pr.d <= tol && (!best || pr.d < best.d)) best = { rj, s, t: pr.t, x: pr.x, y: pr.y, d: pr.d };
         });
+        /* どこにもつながらない端点: 進行方向の先 15m 以内に別の道路があれば、短い線を足してつなぐ
+         * （道路データの重複除去やタイルの境目でできた数 m の切れ目を埋める。高速道路は高速道路どうしだけ） */
+        let bridge = false;
+        if (!best && !roads[ri].planned && opt.bridgeGaps !== false) {
+          const o = p[end === 0 ? 1 : p.length - 2], l = hyp(e[0] - o[0], e[1] - o[1]) || 1, ux = (e[0] - o[0]) / l, uy = (e[1] - o[1]) / l, mw = roads[ri].kind === 'mw';
+          grid.near(e[0], e[1], 15, (v) => {
+            const rj = Math.floor(v / 1e6), s = v % 1e6;
+            if (rj === ri || roads[rj].planned || (roads[rj].kind === 'mw') !== mw) return;
+            const q = P[rj], pr = projSeg(e[0], e[1], q[s][0], q[s][1], q[s + 1][0], q[s + 1][1]);
+            if (pr.d > 15 || (pr.x - e[0]) * ux + (pr.y - e[1]) * uy < 0.5 * pr.d) return;
+            if (!best || pr.d < best.d) best = { rj, s, t: pr.t, x: pr.x, y: pr.y, d: pr.d };
+          });
+          bridge = !!best;
+        }
         if (!best) continue;
         const q = P[best.rj], a = q[best.s], b = q[best.s + 1], da = hyp(best.x - a[0], best.y - a[1]), db = hyp(best.x - b[0], best.y - b[1]);
-        if (da < 0.6) { e[0] = a[0]; e[1] = a[1]; } else if (db < 0.6) { e[0] = b[0]; e[1] = b[1]; } else { e[0] = best.x; e[1] = best.y; ins[best.rj].push({ s: best.s, t: best.t, x: best.x, y: best.y }); }
+        const to = da < 0.6 ? [a[0], a[1]] : db < 0.6 ? [b[0], b[1]] : [best.x, best.y];
+        if (da >= 0.6 && db >= 0.6) ins[best.rj].push({ s: best.s, t: best.t, x: best.x, y: best.y });
+        if (bridge) ext.push({ ri, end, to }); else { e[0] = to[0]; e[1] = to[1]; }
       }
     });
+    ext.forEach((x) => { if (x.end === 0) { P[x.ri].unshift(x.to); ins[x.ri].forEach((i) => { i.s++; }); } else P[x.ri].push(x.to); });
     /* 計画道路が途中で横切る道路とは平面交差としてつなぐ（高速道路・立体交差の指定がある道路を除く） */
     if (opt.crossPlanned !== false) P.forEach((p, ri) => {
       const r = roads[ri];
@@ -262,24 +280,35 @@
     /* 区間データ（センサス）: リンクの 20・50・80% の点が、区間の線の近くをほぼ平行に通っていれば割り当てる */
     const lgrid = segGrid(100), lseg = [];
     obs.forEach((o, oi) => { if (o.ls) o.ls.forEach((l) => { for (let i = 1; i < l.length; i++) { lgrid.add(l[i - 1].x, l[i - 1].y, l[i].x, l[i].y, lseg.length); lseg.push([oi, l[i - 1].x, l[i - 1].y, l[i].x, l[i].y]); } }); });
-    const linesNear = (x, y, dx, dy, tol, filter) => { // 近くを通る区間ごとに、最も近い線分
-      const best = new Map();
-      lgrid.near(x, y, tol, (si) => {
+    const linesNear = (x, y, dx, dy, tol, filter) => { // 近くを通る区間ごとに、最も近い線分。lo・hi は進行方向の左を正とした横ずれの範囲（60m 以内）
+      const best = new Map(), R = dx == null ? tol : Math.max(tol, 60);
+      lgrid.near(x, y, R, (si) => {
         const s = lseg[si], o = obs[s[0]]; if (filter && !filter(o)) return;
-        const pr = projSeg(x, y, s[1], s[2], s[3], s[4]); if (pr.d > tol) return;
+        const pr = projSeg(x, y, s[1], s[2], s[3], s[4]); if (pr.d > R) return;
         const l = hyp(s[3] - s[1], s[4] - s[2]) || 1, ux = (s[3] - s[1]) / l, uy = (s[4] - s[2]) / l, cos = dx == null ? 1 : ux * dx + uy * dy;
         if (Math.abs(cos) < 0.8) return;
-        const b = best.get(s[0]); if (!b || pr.d < b.d) best.set(s[0], { d: pr.d, oi: s[0], sign: cos >= 0 ? 1 : -1, ux, uy });
+        const off = dx == null ? 0 : (pr.x - x) * -dy + (pr.y - y) * dx;
+        let b = best.get(s[0]); if (!b) { b = { d: Infinity, oi: s[0], lo: off, hi: off }; best.set(s[0], b); }
+        b.lo = Math.min(b.lo, off); b.hi = Math.max(b.hi, off);
+        if (pr.d < b.d) { b.d = pr.d; b.sign = cos >= 0 ? 1 : -1; b.ux = ux; b.uy = uy; b.off = off; }
       });
-      return [...best.values()].sort((a, b) => a.d - b.d);
+      return [...best.values()].filter((b) => b.d <= tol).sort((a, b) => a.d - b.d);
     };
     if (lseg.length) E.forEach((e) => {
       if (e.planned || KIND_RANK[e.kind] < 1) return;
       const tol = e.kind === 'mw' ? 30 : KIND_RANK[e.kind] >= 3 ? 22 : 12, hi = e.kind === 'mw';
       const filter = (o) => { const t = o.meta && o.meta.type; return !t || (t <= 2) === hi || e.kind === 'tr'; };
       const votes = new Map();
-      for (const f of [0.2, 0.5, 0.8]) { const q = pointAt(e, e.len * f); for (const m of linesNear(q.x, q.y, q.dx, q.dy, tol, filter)) { const v = votes.get(m.oi) || { n: 0, s: 0 }; v.n++; v.s += m.sign; votes.set(m.oi, v); } }
-      for (const [oi, v] of votes) if (v.n >= 2 || e.len < 40) e.cands.push({ o: obs[oi], sign: v.s >= 0 ? 1 : -1, how: 'direct' });
+      for (const f of [0.2, 0.5, 0.8]) {
+        const q = pointAt(e, e.len * f);
+        for (const m of linesNear(q.x, q.y, q.dx, q.dy, tol, filter)) {
+          const v = votes.get(m.oi) || { n: 0, s: 0, ow: 0 }; v.n++; v.s += m.sign; votes.set(m.oi, v);
+          /* 上下線が別々の線で描かれた道路: 区間の線が 2 本あり、このリンクがその片方に重なっているとき、
+           * 左側通行なので「もう 1 本が右に見える向き」がこのリンクの進行方向 */
+          const sep = m.hi - m.lo; if (sep >= 5 && m.d <= 0.35 * sep) v.ow += Math.abs(m.lo - m.off) > Math.abs(m.hi - m.off) ? 1 : -1;
+        }
+      }
+      for (const [oi, v] of votes) if (v.n >= 2 || e.len < 40) e.cands.push({ o: obs[oi], sign: v.s >= 0 ? 1 : -1, how: 'direct', ow: Math.abs(v.ow) >= Math.min(2, v.n) ? Math.sign(v.ow) : 0 });
     });
     /* 地点データ（実測・常時観測・取り込み）: 最も近いリンクに割り当て、同じ道路の隣の区間へも準用する */
     obs.forEach((o) => {
@@ -299,6 +328,22 @@
     E.forEach((e) => {
       e.cands.sort((x, y) => rankOf(y) - rankOf(x) || dateNum(y.o.date) - dateNum(x.o.date));
       e.ob = e.cands[0] || null;
+      e.share = 1;
+    });
+    /* 道路データに一方通行の情報が無い（地理院）のに上下線・側道が別々の線で描かれている道路:
+     * 同じ区間データに割り当てられたリンクが真横に並んでいるとき、区間データ（断面全体の値）をその本数で等分して各線に割り当てる。
+     * どの線も両方向に通れるものとして扱い、観測値との比較・OD の補正は、並んだ線の合計で行う（e.twins） */
+    E.forEach((e) => { e.twins = []; });
+    E.forEach((e, ei) => {
+      if (e.oneway || e.planned || e.len < 12) return;
+      const c = e.cands.find((q) => q.o.ls && !(q.o.meta && q.o.meta.oneway)); if (!c) return;
+      const q = pointAt(e, e.len / 2);
+      egrid.near(q.x, q.y, 60, (fi) => {
+        const f = E[fi]; if (f === e || f.planned || f.oneway || !f.cands.some((k) => k.o === c.o)) return;
+        const n = nearestOnEdge(f, q.x, q.y), cos = n.dx * q.dx + n.dy * q.dy; if (n.d < 4 || n.d > 60 || Math.abs(cos) < 0.8) return;
+        if (Math.abs((n.x - q.x) * -q.dy + (n.y - q.y) * q.dx) >= 0.8 * n.d) e.twins.push({ ei: fi, same: cos >= 0 ? 1 : -1 }); // 真横にある
+      });
+      e.share = 1 / (1 + e.twins.length);
     });
     attributes(net, opt);
     return net;
@@ -348,29 +393,36 @@
       const g = groupOf(e.kind); e.group = g;
       /* 車線数（両方向の合計） */
       let lanes = ed.lanes || 0, laneSrc = 'edit';
-      const half = !!(e.oneway && m && !m.oneway); // 上下線が別々の線で描かれた道路の片側（センサスの値は両方向の合計）
-      if (!lanes && m && m.lanes > 0) { lanes = half ? Math.max(1, Math.round(m.lanes / 2)) : m.lanes; laneSrc = 'census'; }
+      const part = m && !m.oneway ? (e.oneway ? 0.5 : e.share || 1) : 1; // 上下線・側道が別々の線で描かれた道路の 1 本（センサスの値は断面全体）
+      if (!lanes && m && m.lanes > 0) { lanes = Math.max(1, Math.round(m.lanes * part)); laneSrc = 'census'; }
       if (!lanes && e.lanes > 0) { lanes = e.lanes; laneSrc = 'data'; }
       if (!lanes) { lanes = e.kind === 'mw' ? 4 : e.kind === 're' || e.kind === 'sv' ? (e.width >= 5.5 ? 2 : 1) : e.width >= 13 ? 4 : e.width > 0 && e.width < 5.5 ? 1 : 2; if (e.oneway) lanes = Math.max(1, Math.round(lanes / 2)); laneSrc = 'guess'; }
       e.lanesEff = lanes; e.laneSrc = laneSrc;
       /* 交通容量 [台/12h, 両方向]: センサス区間は 交通量÷混雑度、それ以外は全国の中央値（道路種別×沿道状況×車線数） */
       const eff = e.oneway ? lanes * 2 : lanes; // 表は両方向の車線数で引く
       let cap = ed.cap12 || 0, capSrc = 'edit';
-      if (!cap && m && m.konz > 0 && m.t12 > 0 && !ed.lanes) { cap = m.t12 / m.konz / (half ? 2 : 1); capSrc = 'census'; }
+      if (!cap && m && m.konz > 0 && m.t12 > 0 && !ed.lanes) { cap = (m.t12 / m.konz) * part; capSrc = 'census'; }
       if (!cap) {
         const gg = g === 'L' ? 'P' : g, per = pickLane(M && M.cap12, gg, area, e.kind === 're' && eff <= 1 ? 1 : Math.max(eff, g === 'L' ? 2 : 1)) || 4000;
         cap = per * lanes * (g === 'L' ? LOCAL_CAP[e.kind] || 0.5 : 1); capSrc = 'model';
       }
       e.cap12 = cap; e.capSrc = capSrc;
-      /* 自由走行速度 [km/h]（a→b, b→a）: センサスの昼間非混雑時旅行速度 → 種別×沿道状況の中央値。規制速度は超えない */
-      let v = g === 'L' ? LOCAL_V0[e.kind][area - 1] : (M && M.v0 && M.v0[`${g}${area}`]) || (g === 'H' ? 80 : 30);
-      if (e.kind === 'se') v *= 0.95;
-      if (e.planned) v = e.tv > 0 ? e.tv : Math.min(e.speed || 60, Math.max(v * 1.15, (e.speed || 40) * 0.6));
-      else if (e.speed > 0 && !e.speedEst) v = Math.min(v, e.speed);
+      /* 自由走行速度 [km/h]（a→b, b→a）。幹線は実測の旅行速度（センサスの昼間非混雑時。無ければ種別×沿道状況の中央値）を、
+       * その速度が観測されたときの混雑（混雑度）の分だけ BPR 関数で割り戻して、交通量 0 のときの速度にする。規制速度は超えない */
+      const al = opt.alpha == null ? DEFAULTS.alpha : opt.alpha, be = opt.beta == null ? DEFAULTS.beta : opt.beta, back = (kz) => 1 + al * Math.pow(Math.min(2, Math.max(0, kz)), be);
+      const lim = Math.max(20, (m && m.limit > 0 ? m.limit : e.speed) || (g === 'H' ? 80 : 50));
+      let v = g === 'L' ? LOCAL_V0[e.kind][area - 1] : Math.min(lim, ((M && M.v0 && M.v0[`${g}${area}`]) || (g === 'H' ? 80 : 30)) * back(0.8) * (e.kind === 'se' ? 0.95 : 1));
+      if (e.planned) v = e.tv > 0 ? e.tv : Math.min(e.speed || 60, Math.max(v, (e.speed || 40) * 0.75));
       let va = v, vb = v;
-      if (m && m.spd && !e.planned) { const sa = e.ob.sign > 0 ? m.spd[3] : m.spd[2], sb = e.ob.sign > 0 ? m.spd[2] : m.spd[3]; if (sa > 3) va = sa; if (sb > 3) vb = sb; }
+      if (m && m.spd && !e.planned) { const sa = e.ob.sign > 0 ? m.spd[3] : m.spd[2], sb = e.ob.sign > 0 ? m.spd[2] : m.spd[3], k = back(m.konz || 0.8); if (sa > 3) va = Math.min(lim, sa * k); if (sb > 3) vb = Math.min(lim, sb * k); }
       if (ed.v0 > 0) va = vb = ed.v0;
-      e.v0 = [Math.max(3, va), Math.max(3, vb)]; e.closed = !!ed.closed;
+      e.v0 = [Math.max(3, va), Math.max(3, vb)]; e.closed = !!ed.closed; e.delay = e.planned ? 0 : NODE_DELAY[e.kind] || 0;
+    });
+    /* 交差点内の短いつなぎの線（20m 未満）は、つながっている道路のうち最も太いものと同じ容量・速度にする */
+    const inc = net.inc || (net.inc = incidence(net));
+    E.forEach((e) => {
+      if (e.len >= 20 || e.planned || (edits[e.key] && edits[e.key].cap12)) return;
+      for (const n of [e.a, e.b]) for (const f of inc[n]) if (f !== e && !f.planned && f.len >= 20) { const fc = f.cap12 / (f.oneway ? 1 : 2), ec = e.cap12 / (e.oneway ? 1 : 2); if (fc > ec) { e.cap12 = fc * (e.oneway ? 1 : 2); e.capSrc = f.capSrc; e.v0 = [Math.max(e.v0[0], f.v0[0]), Math.max(e.v0[1], f.v0[1])]; e.delay = Math.min(e.delay, f.delay); } }
     });
   }
 
@@ -395,7 +447,7 @@
         let r = valueOf(sides[d], period, e.fac), split = false;
         if (!r && hasData(o.both)) { r = valueOf(o.both, period, e.fac); if (r) { r = { v: e.oneway ? r.v : r.v / 2, conv: r.conv }; split = !e.oneway; } }
         if (!r) continue;
-        e.base[d] = r.v; e.bst[d] = split || c.unknown ? 'est' : st; e.bconv[d] = r.conv;
+        e.base[d] = r.v * (o.ls ? e.share || 1 : 1); e.bst[d] = split || c.unknown ? 'est' : st; e.bconv[d] = r.conv;
       }
       if (st === 'real' && e.base[0] != null && e.base[1] != null) { const dayF = periodScale(period, e.fac) / e.fac.dn, a = attrDay(e) * dayF; if (a > 0) ratio[e.group].push((e.base[0] + e.base[1]) / a); }
     });
@@ -422,7 +474,7 @@
       const sc = periodScale(period, e.fac || factors(e.group, e.area)), cap = Math.max(1, (e.cap12 * sc) / (e.oneway ? 1 : 2));
       for (let d = 0; d < 2; d++) {
         const a = 2 * i + d; g.tail[a] = d ? e.b : e.a; g.head[a] = d ? e.a : e.b; g.len[a] = e.len; g.cap[a] = cap;
-        g.t0[a] = (e.len / 1000 / e.v0[d]) * 60; g.planned[a] = e.planned ? 1 : 0;
+        g.t0[a] = (e.len / 1000 / e.v0[d]) * 60 + (e.delay || 0) / 60; g.planned[a] = e.planned ? 1 : 0;
         g.ok[a] = !e.closed && (d ? e.oneway <= 0 : e.oneway >= 0) ? 1 : 0;
       }
     });
@@ -524,7 +576,7 @@
       const es = inc[ni].filter((e) => !e.closed);
       if (es.length !== 1 || es[0].planned || es[0].a === es[0].b) return;
       const e = es[0], edge = Math.min(n.x - x0, x1 - n.x, n.y - y0, y1 - n.y) <= margin;
-      if (KIND_RANK[e.kind] < 1 && !edge) return;
+      if (KIND_RANK[e.kind] < 3 && !edge) return; // 範囲の内側の行き止まりは、都道府県道級以上（データの切れ目）だけを出入口とみなす
       if (KIND_RANK[e.kind] < 0.5) return;
       const atA = e.a === ni, vin = atA ? e.base[0] : e.base[1], vout = atA ? e.base[1] : e.base[0]; // 域内へ入る向き／出る向き
       zones.push({ node: ni, ext: true, O: vin || 0, D: vout || 0, st: [atA ? e.bst[0] : e.bst[1], atA ? e.bst[1] : e.bst[0]], edge: e, name: e.name || KIND_JA[e.kind] });
@@ -541,12 +593,18 @@
         const k = Math.floor(e.mid[0] / size) + ',' + Math.floor(e.mid[1] / size), c = cells.get(k) || { te: 0, cx: (Math.floor(e.mid[0] / size) + 0.5) * size, cy: (Math.floor(e.mid[1] / size) + 0.5) * size, nodes: new Set() };
         cells.set(k, c);
         const f = e.fac || factors(e.group, e.area);
-        c.te += e.len * GEN_RATE[e.area - 1] * (periodScale(period, f) / f.dn); c.nodes.add(e.a); c.nodes.add(e.b);
+        c.te += e.len * GEN_RATE[e.area - 1] * (periodScale(period, f) / f.dn); c.area = e.area; c.f = f;
       });
+      /* ネットワークに入れなかった生活道路（対象道路を幹線に絞ったとき）の延長も発生量に数える */
+      for (const q of opt.extraLocal || []) { const c = cells.get(Math.floor(q.x / size) + ',' + Math.floor(q.y / size)); if (c) c.te += q.len * GEN_RATE[c.area - 1] * (periodScale(period, c.f) / c.f.dn); }
+      /* 発生点: 格子の中で最も格の高い道路の交差点（生活道路の 1 点に全量を載せない） */
+      const nodeRank = new Float32Array(N.length);
+      E.forEach((e) => { if (e.planned || e.closed || e.kind === 'mw') return; const r = KIND_RANK[e.kind]; nodeRank[e.a] = Math.max(nodeRank[e.a], r); nodeRank[e.b] = Math.max(nodeRank[e.b], r); });
+      N.forEach((n, ni) => { const c = cells.get(Math.floor(n.x / size) + ',' + Math.floor(n.y / size)); if (c && nodeRank[ni] > 0) c.nodes.add(ni); });
       const list = [...cells.values()].filter((c) => c.te * scaleI >= 2).sort((a, b) => b.te - a.te).slice(0, Math.max(0, maxZ - zones.length));
       for (const c of list) {
         let best = -1, bd = Infinity;
-        for (const n of c.nodes) { if (used.has(n) || N[n].deg < 2) continue; const d = hyp(N[n].x - c.cx, N[n].y - c.cy); if (d < bd) { bd = d; best = n; } }
+        for (const n of c.nodes) { if (used.has(n) || N[n].deg < 3) continue; const d = hyp(N[n].x - c.cx, N[n].y - c.cy) - nodeRank[n] * size; if (d < bd) { bd = d; best = n; } }
         if (best < 0) continue;
         used.add(best); zones.push({ node: best, ext: false, O: (c.te * scaleI) / 2, D: (c.te * scaleI) / 2, name: '域内' });
       }
@@ -592,11 +650,20 @@
       }
     }
     let od = furness(O, D, F, Z);
-    /* 観測のある arc（補正と再現性の確認に使う） */
-    const obsArc = [];
-    E.forEach((e, i) => { if (e.planned || !e.ob || e.ob.how !== 'direct') return; for (let d = 0; d < 2; d++) if (e.bst[d] && e.bst[d] !== 'attr' && e.base[d] != null && g.ok[2 * i + d]) obsArc.push({ a: 2 * i + d, v: e.base[d], real: e.bst[d] === 'real' }); });
+    /* 観測のある断面（補正と再現性の確認に使う）。上下線・側道が別々の線のときは、並んだ線の同じ向きの合計を 1 つの断面とする */
+    const obsArc = [], seenScreen = new Set();
+    E.forEach((e, i) => {
+      if (e.planned || !e.ob || e.ob.how !== 'direct') return;
+      for (let d = 0; d < 2; d++) {
+        if (!e.bst[d] || e.bst[d] === 'attr' || e.base[d] == null || !g.ok[2 * i + d]) continue;
+        const arcs = [2 * i + d].concat((e.twins || []).map((t) => 2 * t.ei + (t.same > 0 ? d : 1 - d))).sort((x, y) => x - y), key = arcs.join();
+        if (seenScreen.has(key)) continue; seenScreen.add(key);
+        obsArc.push({ a: 2 * i + d, arcs, v: e.base[d] * arcs.length, real: e.bst[d] === 'real', len: e.len, grp: e.ob.o.id + (e.ob.sign > 0 === (d === 0) ? 'a' : 'b') });
+      }
+    });
+    const flowOf = (c, o) => { let s = 0; for (const a of o.arcs) s += c.x[a]; return s; };
     if (P.od === 'entropy' && obsArc.length) {
-      const idx = new Int32Array(g.nA).fill(-1); obsArc.forEach((o, k) => { idx[o.a] = k; });
+      const idx = new Int32Array(g.nA).fill(-1), prior = od.slice(); obsArc.forEach((o, k) => { for (const a of o.arcs) idx[a] = k; });
       const method = P.assign === 'div' ? 'inc' : P.assign;
       for (let outer = 0; outer < 3; outer++) {
         const t = method === 'aon' ? g.t0 : assign(g, od, zn, method, P, true).t, pairs = obsArc.map(() => []);
@@ -609,7 +676,7 @@
           let m = 0; for (const q of pr) m += od[q];
           if (!(m > 0)) continue;
           const f = Math.max(0.2, Math.min(5, Math.pow(obsArc[k].v / m, obsArc[k].real ? 0.7 : 0.35)));
-          for (const q of pr) od[q] *= f;
+          for (const q of pr) od[q] = Math.max(prior[q] * 0.05, Math.min(prior[q] * 20, od[q] * f)); // 元の OD 表から離れすぎない
         }
       }
     }
@@ -634,8 +701,10 @@
       setCase(g, false); before = assign(g, od, zn, P.assign, P);
       if (hasPlan) { setCase(g, true); after = assign(g, od, zn, P.assign, P); } else after = before;
     }
-    /* 現況再現性（実測のある方向別リンク: 観測値 と 計画道路なしの配分値） */
-    const real = obsArc.filter((o) => o.real), pts = (real.length >= 3 ? real : obsArc).map((o) => ({ obs: o.v, mod: before.x[o.a] / (P.growth || 1), a: o.a }));
+    /* 現況再現性: 観測データ 1 件（センサスなら 1 区間）の方向ごとに、観測値 と 計画道路なしの配分値（区間内のリンクの延長加重平均） */
+    const real = obsArc.filter((o) => o.real), grp = new Map();
+    for (const o of real.length >= 3 ? real : obsArc) { const q = grp.get(o.grp) || { obs: 0, mod: 0, len: 0, a: o.a, best: 0 }; grp.set(o.grp, q); q.obs += o.v * o.len; q.mod += (flowOf(before, o) / (P.growth || 1)) * o.len; q.len += o.len; if (o.len > q.best) { q.best = o.len; q.a = o.a; } }
+    const pts = [...grp.values()].map((q) => ({ obs: q.obs / q.len, mod: q.mod / q.len, a: q.a }));
     if (pts.length) {
       const n = pts.length, mo = pts.reduce((s, p) => s + p.obs, 0) / n, mm = pts.reduce((s, p) => s + p.mod, 0) / n;
       let sxy = 0, sxx = 0, syy = 0, se = 0; pts.forEach((p) => { sxy += (p.obs - mo) * (p.mod - mm); sxx += (p.obs - mo) ** 2; syy += (p.mod - mm) ** 2; se += (p.obs - p.mod) ** 2; });
@@ -664,11 +733,11 @@
 
   /* 混雑度の区分（道路交通センサスの解釈） */
   const CONGESTION = [
-    { max: 0.75, color: '#2e9f6b', name: '0.75 未満（円滑）' },
-    { max: 1.0, color: '#b9a400', name: '0.75〜1.0（ほぼ円滑）' },
-    { max: 1.25, color: '#f08a24', name: '1.0〜1.25（ピーク時に混雑）' },
-    { max: 1.75, color: '#e0352b', name: '1.25〜1.75（ピーク時間帯を中心に混雑）' },
-    { max: Infinity, color: '#8b1a6b', name: '1.75 以上（慢性的に混雑）' },
+    { max: 0.75, color: '#5598e7', name: '0.75 未満（円滑）' },
+    { max: 1.0, color: '#eda100', name: '0.75〜1.0（ほぼ円滑）' },
+    { max: 1.25, color: '#e2571f', name: '1.0〜1.25（ピーク時に混雑）' },
+    { max: 1.75, color: '#b3261e', name: '1.25〜1.75（ピーク時間帯を中心に混雑）' },
+    { max: Infinity, color: '#5c0f2e', name: '1.75 以上（慢性的に混雑）' },
   ];
   const congestionOf = (vc) => CONGESTION.find((c) => vc < c.max) || CONGESTION[CONGESTION.length - 1];
 

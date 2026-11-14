@@ -135,3 +135,23 @@ test('伸び率を掛けると交通量が増える', () => {
   const r1 = T.run(bypassCase(true), { internal: 0 }), r2 = T.run(bypassCase(true), { internal: 0, growth: 1.2 });
   near(r2.trips / r1.trips, 1.2, 0.01);
 });
+
+test('数 m の切れ目（重複除去・タイルの境目）は進行方向の先でつなぐ。横に離れた道路とはつながない', () => {
+  const net = T.buildNetwork([line('a', [[0, 0], [300, 0]]), line('b', [[307, 2], [600, 0]]), line('c', [[150, 9], [450, 9]], { kind: 're' })]);
+  const far = net.nodes.filter((n) => n.deg === 1).map((n) => Math.round(n.x)).sort((x, y) => x - y);
+  assert.deepStrictEqual(far, [0, 150, 450, 600], 'a と b はつながり、9m 横を並行する c はつながらない');
+  assert.strictEqual(T.buildNetwork([line('a', [[0, 0], [300, 0]]), line('b', [[307, 2], [600, 0]])], { bridgeGaps: false }).nodes.filter((n) => n.deg === 1).length, 4);
+});
+
+test('上下線が別々の線（一方通行の情報なし）: 区間の値を 2 本に等分し、観測との比較は 2 本の合計で行う', () => {
+  const roads = [line('w', [[-800, 0], [0, 0]], { kind: 'tr' }), line('up', [[0, 0], [50, 8], [950, 8], [1000, 0]], { kind: 'tr' }), line('dn', [[0, 0], [50, -8], [950, -8], [1000, 0]], { kind: 'tr' }), line('e', [[1000, 0], [1800, 0]], { kind: 'tr' })];
+  const net = T.buildNetwork(roads);
+  const sec = { id: 'c', src: 'census', date: '20211001', ls: [[{ x: -800, y: 0 }, { x: 1800, y: 0 }]], a: { day: 12000 }, b: { day: 10000 }, meta: { type: 3, lanes: 4, area: 2, dn: 1.3, pk: 10, konz: 1, t12: 17000 } };
+  T.prepare(net, [sec], {}); T.baseVolumes(net, 'day');
+  const up = net.edges.find((e) => e.rid === 'up'), w = net.edges.find((e) => e.rid === 'w');
+  assert.strictEqual(up.share, 0.5); assert.strictEqual(up.twins.length, 1); assert.strictEqual(w.share, 1);
+  near(up.base[0] + up.base[1], 11000, 1e-6, '1 本あたり半分'); near(w.base[0] + w.base[1], 22000, 1e-6);
+  near(up.cap12, w.cap12 / 2, 1e-6, '容量も半分'); assert.strictEqual(up.lanesEff, 2);
+  const r = T.run(net, { internal: 0 });
+  assert.ok(!r.failed); assert.ok(r.fit.rmse < 0.1, `断面の合計で再現 ${r.fit.rmse}`);
+});

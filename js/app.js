@@ -16,7 +16,7 @@ const LS_KEY = 'roadplan.project.v1';
 function newProject() {
   return {
     version: 1, name: '無題の道路計画', origin: null, roads: [], existing: [], image: null,
-    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, view: null, googleKey: '',
+    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, view: null, googleKey: '', traffic: null,
     defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false },
   };
 }
@@ -32,14 +32,17 @@ function save() {
   project.view = { lat: c.lat, lng: c.lng, zoom: map.getZoom() };
   try { localStorage.setItem(LS_KEY, JSON.stringify(project)); }
   catch (e) {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(Object.assign({}, project, { existing: [] }))); } catch (e2) { /* 容量超過 */ }
+    // 容量超過: 取り直せるデータ（既存道路 → センサスの区間）から順に保存をあきらめる
+    const tr = project.traffic && Object.assign({}, project.traffic, { obs: project.traffic.obs.filter((o) => o.src !== 'census') });
+    try { localStorage.setItem(LS_KEY, JSON.stringify(Object.assign({}, project, { existing: [] }))); }
+    catch (e2) { try { localStorage.setItem(LS_KEY, JSON.stringify(Object.assign({}, project, { existing: [], traffic: tr }))); } catch (e3) { /* 容量超過 */ } }
   }
 }
 
-/* undo / redo: 計画道路・下絵配置・既存道路のスナップショット
- * 既存道路は件数が多いので配列の参照だけを持つ（要素は書き換えず、変更時は常に新しい配列・新しい要素を作る） */
+/* undo / redo: 計画道路・下絵配置・既存道路・交通量データのスナップショット
+ * 既存道路と交通量の観測データは件数が多いので配列の参照だけを持つ（要素は書き換えず、変更時は常に新しい配列・新しい要素を作る） */
 const hist = { undo: [], redo: [], last: null };
-const snapshot = () => ({ s: JSON.stringify({ roads: project.roads, image: project.image }), ex: project.existing });
+const snapshot = () => ({ s: JSON.stringify({ roads: project.roads, image: project.image, tedits: project.traffic ? project.traffic.edits : null }), ex: project.existing, tobs: project.traffic ? project.traffic.obs : null });
 function commit() {
   hist.undo.push(hist.last); if (hist.undo.length > 100) hist.undo.shift();
   hist.redo = []; hist.last = snapshot();
@@ -48,6 +51,7 @@ function commit() {
 }
 function restore(h) {
   const o = JSON.parse(h.s); project.roads = o.roads; project.image = o.image;
+  if (project.traffic) { project.traffic.obs = h.tobs || []; project.traffic.edits = o.tedits || {}; }
   if (project.existing !== h.ex) {
     project.existing = h.ex;
     if (ui.sel && ui.sel.type === 'existing' && !project.existing.some((e) => e.id === ui.sel.id)) ui.sel = null;
@@ -264,7 +268,8 @@ function osmToEx(w) {
   return {
     id: 'osm-' + w.id, src: 'OSM', name: t.name || t.ref || '', cls: t.highway, clsJa: CLS_JA[cls] || t.highway,
     width: tw || (lanes ? lanes * 3.0 + 1.0 : CLS_WIDTH[cls] || 5), widthNote: tw ? 'width タグ' : lanes ? '車線数から推定' : '道路種別から推定',
-    lanes, speed: ms || CLS_SPEED[t.highway] || 40, speedEst: !ms, oneway: t.oneway === 'yes', surface: t.surface || '', pts, bbox: bboxOf(pts),
+    lanes, speed: ms || CLS_SPEED[t.highway] || 40, speedEst: !ms, oneway: t.oneway === 'yes' || t.junction === 'roundabout', surface: t.surface || '', pts, bbox: bboxOf(pts),
+    sep: !!((t.bridge && t.bridge !== 'no') || (t.tunnel && t.tunnel !== 'no') || (t.layer && t.layer !== '0')) || undefined, // 高架・トンネル（計画道路と平面交差しない）
   };
 }
 const GSI_W = { '3m未満': 2.5, '3m-5.5m未満': 4.25, '5.5m-13m未満': 7.0, '13m-19.5m未満': 16, '19.5m以上': 20 };
@@ -663,6 +668,7 @@ function renderMap() {
   if (ui.sel && ui.sel.type === 'existing' && ui.sel.at) L.circleMarker(ui.sel.at, { radius: 5, color: '#0d99ff', weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false }).addTo(gMisc);
   if (!ui.dragging) renderHandles();
   $('#zoomLabel').textContent = 'z ' + map.getZoom().toFixed(1);
+  if (typeof TrafficUI !== 'undefined') TrafficUI.render();
 }
 
 /* ハンドル（IP・中点・下絵） */
@@ -732,6 +738,7 @@ const HINTS = {
   draw: 'クリックで IP を追加 ・ 既存道路の近くで吸着して接続 ・ <kbd>ダブルクリック</kbd>/<kbd>Enter</kbd> で確定 ・ <kbd>Backspace</kbd> で1点戻す ・ <kbd>Alt</kbd> で吸着オフ ・ <kbd>Esc</kbd> で中止',
   measure: '2点をクリックして距離と方位角を計測 ・ <kbd>Esc</kbd> で終了',
   pick: '下絵上で実距離が分かる 2 点をクリックしてください ・ <kbd>Esc</kbd> で中止',
+  tobs: '交通量を観測した地点の道路をクリックしてください（下の表に方向別の台数を入力します） ・ <kbd>Esc</kbd> で終了',
 };
 function setTool(t) {
   if (ui.tool === 'draw' && t !== 'draw') ui.draw = null;
@@ -797,6 +804,7 @@ function drawMeasure() {
 
 /* ───────── 地図イベント ───────── */
 map.on('click', (e) => {
+  if (typeof TrafficUI !== 'undefined' && TrafficUI.mapClick(e)) return;
   if (ui.tool === 'draw') {
     const d = ui.draw, snap = e.originalEvent.altKey ? null : snapAt(e.containerPoint);
     const ll = snap ? snap.latlng : e.latlng, xy = P.toXY(ll), lastIp = d.ips[d.ips.length - 1];
@@ -851,6 +859,7 @@ let panelRaf = 0;
 function schedulePanel() { if (!panelRaf) panelRaf = requestAnimationFrame(() => { panelRaf = 0; renderPanels(); }); }
 function refresh() {
   renderMap(); renderPanels();
+  if (typeof TrafficUI !== 'undefined') TrafficUI.schedule();
   // 線形を変えると現況地盤は取り直しになる。計画縦断がある道路は自動で取り直す
   const r = selRoad();
   if (r && r.vips && !ui.dragging && groundWanted.has(r.id) && !ui.profiles.has(r.id) && !groundLoading.has(r.id)) setTimeout(() => { if (!ui.profiles.has(r.id) && roadById(r.id)) loadProfile(r); }, 300);
