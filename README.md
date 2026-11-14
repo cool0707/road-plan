@@ -40,4 +40,4 @@ Google マップを背景にするには Google Maps Platform の **Map Tiles AP
 node --test test/geom.test.js
 ```
 
-構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `js/report.js`（PDF 用レポート）, `js/search.js`（地名・住所検索）, `js/vectorstyle.js`（ベクトル地図のスタイル）, `vendor/leaflet`（Leaflet 1.9.4）, `vendor/maplibre`（MapLibre GL JS 5.24.0 + maplibre-gl-leaflet 0.1.4、ベクトル地図選択時のみ読み込み）
+構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `js/report.js`（PDF 用レポート）, `js/search.js`（地名・住所検索）, `js/vectorstyle.js`（ベクトル地図のスタイル）, `vendor/leaflet`（Leaflet 1.9.4）, `vendor/maplibre`（MapLibre GL JS 5.24.0 + maplibre-gl-leaflet 0.1.4、ベクトル地図・既存道路の描画時に読み込み）

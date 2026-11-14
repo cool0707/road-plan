@@ -77,9 +77,11 @@ const P = {
 const map = L.map('map', { zoomControl: false, doubleClickZoom: false, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 90, maxZoom: 22, minZoom: 4 });
 map.setView(project.view ? [project.view.lat, project.view.lng] : [35.6812, 139.7671], project.view ? project.view.zoom : 16);
 L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
-[['image', 250], ['existing', 350], ['design', 420], ['labels', 450]].forEach(([n, z]) => { map.createPane(n).style.zIndex = z; });
+[['image', 250], ['exband', 340], ['existing', 350], ['design', 420], ['labels', 450]].forEach(([n, z]) => { map.createPane(n).style.zIndex = z; });
 map.getPane('labels').style.pointerEvents = 'none';
+map.getPane('exband').style.pointerEvents = 'none';
 const exRenderer = L.canvas({ pane: 'existing', tolerance: 8 });
+const exBandRenderer = L.canvas({ pane: 'exband' }); // WebGL が使えないときの帯の描画先
 const gExisting = L.layerGroup().addTo(map), gRoads = L.layerGroup().addTo(map), gPreview = L.layerGroup().addTo(map),
   gHandles = L.layerGroup().addTo(map), gHover = L.layerGroup().addTo(map), gMisc = L.layerGroup().addTo(map);
 
@@ -428,34 +430,102 @@ async function fetchGSI() {
   if (!res) return toast('地理院 道路中心線タイルを取得できませんでした', 'err');
   toast(`道路中心線 ${res.added} 本を取得しました${dupMsg(res)}（国土地理院ベクトルタイル提供実験）`);
 }
+/* 既存道路の描画
+ * ・帯（幅員/中心線）は不透明色で 1 枚に描き、ペイン全体に透明度をかける → 重なり部分が濃くならない
+ * ・表示は MapLibre GL（WebGL）: 座標を整数ピクセルに丸めず・間引かずにアンチエイリアス描画するので滑らか
+ *   WebGL が使えないときは Leaflet canvas（間引きなし）で代用
+ * ・クリック判定は Leaflet の透明な線で行う */
+const EX_C = { band: '#0f9d8f', center: '#0b7a6f', sel: '#0d99ff' };
+const exGL = { state: 'none', band: null, line: null, data: null, wide: null, lat: null, selFid: null, ids: new Map() };
+function exGLInit() {
+  if (exGL.state !== 'none') return;
+  exGL.state = 'loading';
+  const empty = { type: 'FeatureCollection', features: [] };
+  const style = (layers) => ({ version: 8, sources: { ex: { type: 'geojson', data: empty }, sel: { type: 'geojson', data: empty } }, layers });
+  const round = { 'line-cap': 'round', 'line-join': 'round' }, isSel = ['boolean', ['feature-state', 'sel'], false];
+  loadMapLibre().then(() => {
+    const cv = document.createElement('canvas');
+    if (!cv.getContext('webgl2') && !cv.getContext('webgl')) throw new Error('WebGL 非対応');
+    const make = (pane, layers) => new Promise((res, rej) => {
+      const lyr = L.maplibreGL({ pane, interactive: false, attributionControl: false, style: style(layers) }).addTo(map);
+      lyr.getContainer().style.pointerEvents = 'none';
+      const gl = lyr.getMaplibreMap();
+      gl.once('load', () => res(gl)); gl.once('error', (e) => rej(e.error || e));
+    });
+    return Promise.all([
+      make('exband', [{ id: 'band', type: 'line', source: 'ex', layout: round, paint: { 'line-color': ['case', isSel, EX_C.sel, EX_C.band], 'line-width': 3 } }]),
+      make('existing', [
+        { id: 'center', type: 'line', source: 'ex', paint: { 'line-color': ['case', isSel, EX_C.sel, EX_C.center], 'line-width': ['case', isSel, 2, 1], 'line-opacity': 0.9, 'line-dasharray': [6, 4] } },
+        { id: 'sel', type: 'line', source: 'sel', layout: round, paint: { 'line-color': EX_C.sel } },
+      ]),
+    ]);
+  }).then(([band, line]) => { Object.assign(exGL, { state: 'ready', band, line }); renderExisting(); })
+    .catch(() => { exGL.state = 'failed'; renderExisting(); });
+}
+/* 幅員 [m] → 線幅 [px]（MapLibre のズーム = Leaflet のズーム - 1、512px タイル基準） */
+function exWidthExpr(lat, minPx, prop = ['get', 'w']) {
+  const k = 512 / (40075016.686 * Math.cos((lat * Math.PI) / 180)), stops = [];
+  for (let z = 6; z <= 23; z++) stops.push(z, ['max', minPx, ['*', prop, k * 2 ** z]]);
+  return ['interpolate', ['exponential', 2], ['zoom'], ...stops];
+}
+function renderExistingGL(sel, wide) {
+  const { band, line } = exGL, list = project.existingVisible ? project.existing : [];
+  if (exGL.data !== list) {
+    exGL.data = list; exGL.ids = new Map(); exGL.selFid = null;
+    band.removeFeatureState({ source: 'ex' }); line.removeFeatureState({ source: 'ex' });
+    const fc = { type: 'FeatureCollection', features: list.map((ex, i) => {
+      exGL.ids.set(ex.id, i + 1);
+      return { type: 'Feature', id: i + 1, properties: { w: ex.width }, geometry: { type: 'LineString', coordinates: ex.pts.map((p) => [p[1], p[0]]) } };
+    }) };
+    band.getSource('ex').setData(fc); line.getSource('ex').setData(fc);
+  }
+  const lat = Math.round(map.getCenter().lat * 10) / 10;
+  if (exGL.wide !== wide || exGL.lat !== lat) {
+    exGL.wide = wide; exGL.lat = lat;
+    band.setPaintProperty('band', 'line-width', wide ? exWidthExpr(lat, 3) : 3);
+    line.setLayoutProperty('center', 'visibility', wide ? 'visible' : 'none');
+    line.setPaintProperty('sel', 'line-width', wide ? exWidthExpr(lat, 6) : ['case', ['get', 'piece'], 7, 6]);
+    line.setPaintProperty('sel', 'line-opacity', wide ? ['case', ['get', 'piece'], 0.55, 0.3] : 0.95);
+  }
+  const fid = sel ? exGL.ids.get(sel.ex.id) : null;
+  if (exGL.selFid !== fid) {
+    for (const gl of [band, line]) {
+      if (exGL.selFid != null) gl.setFeatureState({ source: 'ex', id: exGL.selFid }, { sel: false });
+      if (fid != null) gl.setFeatureState({ source: 'ex', id: fid }, { sel: true });
+    }
+    exGL.selFid = fid;
+  }
+  line.getSource('sel').setData({ type: 'FeatureCollection', features: sel ? [{ type: 'Feature', properties: { w: sel.ex.width, piece: !!sel.pts },
+    geometry: { type: 'LineString', coordinates: (sel.pts || sel.ex.pts).map((p) => [p[1], p[0]]) } }] : [] });
+}
 function renderExisting() {
   gExisting.clearLayers();
-  if (!project.existingVisible) return;
-  const selId = ui.sel && ui.sel.type === 'existing' ? ui.sel.id : null;
   const wide = project.existingWidth, ppm = wide ? pxPerM() : 0;
+  map.getPane('exband').style.opacity = wide ? 0.35 : 0.75;
+  if (project.existing.length && exGL.state === 'none') exGLInit();
+  const useGL = exGL.state === 'ready';
+  const selEx = project.existingVisible && ui.sel && ui.sel.type === 'existing' ? project.existing.find((e) => e.id === ui.sel.id) : null;
+  const sel = selEx ? { ex: selEx, pts: ui.sel.piece && !ui.sel.whole ? Geom.polySlice(selEx.pts, ui.sel.piece[0], ui.sel.piece[1]) : null } : null;
+  if (useGL) renderExistingGL(sel, wide);
+  if (!project.existingVisible) return;
+  const pl = (pts, o) => L.polyline(pts, Object.assign({ smoothFactor: 0, interactive: false, lineCap: 'round', lineJoin: 'round' }, o)).addTo(gExisting);
+  const bandW = (ex, min) => (wide ? Math.max(min, ex.width * ppm) : min);
   for (const ex of project.existing) {
-    const on = ex.id === selId;
-    const click = (e) => {
-      if (ui.tool !== 'select') return; L.DomEvent.stopPropagation(e);
-      const at = [e.latlng.lat, e.latlng.lng];
-      select(Object.assign({ type: 'existing', id: ex.id, at }, existingPiece(ex, at)));
-    };
-    if (on && ui.sel.piece && !ui.sel.whole) { // 選択区間だけを強調
-      const pts = Geom.polySlice(ex.pts, ui.sel.piece[0], ui.sel.piece[1]);
-      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: '#0d99ff', weight: wide ? Math.max(3, ex.width * ppm) : 3, opacity: wide ? 0.2 : 0.45, lineCap: 'butt', lineJoin: 'round' })
-        .on('click', click).addTo(gExisting);
-      L.polyline(pts, { renderer: exRenderer, pane: 'existing', color: '#0d99ff', weight: wide ? Math.max(6, ex.width * ppm) : 7, opacity: wide ? 0.55 : 0.95, lineCap: 'butt', lineJoin: 'round' })
-        .on('click', click).addTo(gExisting);
-      continue;
-    }
-    if (wide) { // 幅員どおりの帯 + 中心線
-      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0f9d8f', weight: Math.max(3, ex.width * ppm), opacity: on ? 0.45 : 0.3, lineCap: 'butt', lineJoin: 'round' })
-        .on('click', click).addTo(gExisting);
-      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0b7a6f', weight: on ? 2 : 1, opacity: 0.9, dashArray: '6 4', interactive: false }).addTo(gExisting);
-    } else {
-      L.polyline(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? '#0d99ff' : '#0f9d8f', weight: on ? 6 : 3, opacity: on ? 0.95 : 0.7 })
-        .on('click', click).addTo(gExisting);
-    }
+    const on = sel && sel.ex === ex;
+    // クリック判定用（透明）
+    pl(ex.pts, { renderer: exRenderer, pane: 'existing', opacity: 0, weight: Math.max(8, bandW(ex, 3)), interactive: true })
+      .on('click', (e) => {
+        if (ui.tool !== 'select') return; L.DomEvent.stopPropagation(e);
+        const at = [e.latlng.lat, e.latlng.lng];
+        select(Object.assign({ type: 'existing', id: ex.id, at }, existingPiece(ex, at)));
+      });
+    if (useGL) continue;
+    pl(ex.pts, { renderer: exBandRenderer, pane: 'exband', color: on ? EX_C.sel : EX_C.band, weight: bandW(ex, 3), opacity: 1 });
+    if (wide) pl(ex.pts, { renderer: exRenderer, pane: 'existing', color: on ? EX_C.sel : EX_C.center, weight: on ? 2 : 1, opacity: 0.9, dashArray: '6 4', lineCap: 'butt' });
+  }
+  if (sel && !useGL) {
+    const piece = !!sel.pts;
+    pl(sel.pts || sel.ex.pts, { renderer: exRenderer, pane: 'existing', color: EX_C.sel, weight: wide ? bandW(sel.ex, 6) : piece ? 7 : 6, opacity: wide ? (piece ? 0.55 : 0.3) : 0.95 });
   }
 }
 function existingInfo(ex, at) {
