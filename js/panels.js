@@ -15,6 +15,7 @@ const ICON = {
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.500 9.500a2.500 2.500 0 115 0c0 1.500-2.500 2-2.500 4"/><circle cx="12" cy="17" r=".6"/>',
   cube: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
+  exlink: '<path d="M3 18l5-6"/><path d="M16 12l5-6"/><path d="M8 12h8" stroke-dasharray="2 2.5"/><circle cx="8" cy="12" r="1.4"/><circle cx="16" cy="12" r="1.4"/>',
   target: '<circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
 };
 const ic = (n) => `<svg class="ic" viewBox="0 0 24 24">${ICON[n]}</svg>`;
@@ -45,7 +46,9 @@ function renderLeft() {
       <div class="row"><button class="btn" data-act="fetch-osm" title="表示範囲の道路を OpenStreetMap (Overpass API) から取得">OSM から取得</button><button class="btn" data-act="fetch-gsi" title="表示範囲の道路中心線を国土地理院ベクトルタイルから取得">地理院から取得</button></div>
       <div class="row one"><label class="fld" title="既存道路の表示方法（幅員どおり: 幅員の値で帯状に描画）"><span class="lb">表示方法</span><select data-key="existingWidth"><option value="0"${project.existingWidth ? '' : ' selected'}>中心線</option><option value="1"${project.existingWidth ? ' selected' : ''}>幅員どおり</option></select></label></div>
       <div class="row one"><button class="btn" data-act="dedupe-existing" title="OSM と地理院など、ほぼ同じ位置に重なっている既存道路を 1 本にまとめる"${project.existing.length ? '' : ' disabled'}>重複を除去</button></div>
-      <div class="muted small">表示中の範囲の道路を読み込み、接続先として吸着できます。取得時、既に読み込んだ道路と重なる線は自動で除外します。不要な道路はクリックして選択し <kbd>Delete</kbd> で削除できます（交差点・屈曲点で区切られた区間ごと。<kbd>Ctrl</kbd>+<kbd>Z</kbd> で元に戻せます）。</div>
+      <div class="row">${num('許容', 'healTol', project.healTol || 8, { unit: 'm', step: 1, dec: 0, title: 'この距離以内で途切れている端点をつなぐ' })}<button class="btn" data-act="heal-existing" title="どの道路にもつながっていない端点を、許容距離以内の道路（端点・延長線の交点・前方の最近点）まで延ばしてつなぐ"${project.existing.length ? '' : ' disabled'}>途切れを修復</button></div>
+      <div class="row one"><button class="btn${ui.tool === 'exlink' ? ' accent' : ''}" data-act="tool-exlink" title="途切れた道路を手でつなぐ／足りない道路を描き足す (L)">手でつなぐ・描き足す (L)</button></div>
+      <div class="muted small">表示中の範囲の道路を読み込み、接続先として吸着できます。取得時、既に読み込んだ道路と重なる線は自動で除外します。不要な道路はクリックして選択し <kbd>Delete</kbd> で削除できます（交差点・屈曲点で区切られた区間ごと。<kbd>Ctrl</kbd>+<kbd>Z</kbd> で元に戻せます）。実際はつながっているのに途切れている所は「途切れを修復」で自動でつなぐか、「手でつなぐ」、または道路を選択して端点の ○ をドラッグして直せます。</div>
     </div>
     <div class="lgroup" style="border-top:1px solid var(--line)"><span>下絵画像</span><button class="ibtn" data-act="add-image" title="地図画像・図面を読み込む">${ic('plus')}</button></div>
     ${im ? `<div class="layer${ui.sel && ui.sel.type === 'image' ? ' sel' : ''}" data-act="sel-image"><span class="dot" style="background:#7b61ff"></span><span class="nm">下絵${ui.imageUrl ? '' : '（画像データなし）'}</span><button class="ibtn${im.visible ? '' : ' off'}" data-act="vis-image" title="表示切替">${ic(im.visible ? 'eye' : 'eyeoff')}</button></div>` : '<div class="empty">図面や地図のスクリーンショットを重ねられます。</div>'}
@@ -60,8 +63,10 @@ function renderLeft() {
 function exCount() {
   const n = project.existing.length;
   if (!n) return '未取得';
-  const osm = project.existing.filter((e) => e.src === 'OSM').length, gsi = n - osm;
-  return `${n} 本` + (osm && gsi ? `（OSM ${osm}・地理院 ${gsi}）` : osm ? '（OSM）' : '（地理院）');
+  const c = { OSM: 0, '地理院': 0, '手動': 0 };
+  project.existing.forEach((e) => { c[e.src] = (c[e.src] || 0) + 1; });
+  const parts = Object.entries(c).filter(([, v]) => v);
+  return `${n} 本` + (parts.length > 1 ? `（${parts.map(([k, v]) => `${k} ${v}`).join('・')}）` : parts.length ? `（${parts[0][0]}）` : '');
 }
 
 /* ───────── 右パネル ───────── */
@@ -319,7 +324,7 @@ function existingPanel() {
     + (ui.sel.whole === false
       ? `<div class="row" style="margin:8px 12px"><button class="btn danger" data-act="del-existing-piece" title="交差点・屈曲点で区切られた、青く表示中の区間だけを削除">この区間を削除 (Delete)</button><button class="btn" data-act="del-existing" title="交差点・屈曲点をまたいで、この道路全体を削除">道路全体を削除</button></div>`
       : `<div class="row one" style="margin:8px 12px"><button class="btn danger" data-act="del-existing">この既存道路を削除 (Delete)</button></div>`)
-    + `<div class="note">幅員・速度はデータにタグが無い場合は推定値です。接続設計では現地測量値・道路台帳を確認してください。<br>この道路に接続するには <b>道路を描く</b> で線上をクリックします。</div>`;
+    + `<div class="note">幅員・速度はデータにタグが無い場合は推定値です。接続設計では現地測量値・道路台帳を確認してください。<br>この道路に接続するには <b>道路を描く</b> で線上をクリックします。<br>途切れている場合は両端の ○ をドラッグして他の道路に吸着させるか、<b>手でつなぐ</b> (<kbd>L</kbd>) で延ばせます。</div>`;
 }
 
 function imagePanel() {
@@ -333,7 +338,7 @@ function imagePanel() {
 }
 
 function renderChrome() {
-  const tools = [['select', '選択 (V)'], ['draw', '道路を描く (P)'], ['measure', '計測 (M)']];
+  const tools = [['select', '選択 (V)'], ['draw', '道路を描く (P)'], ['exlink', '既存道路をつなぐ・描き足す (L)'], ['measure', '計測 (M)']];
   $('#toolbar').innerHTML = tools.map(([t, tip]) => `<button class="${ui.tool === t ? 'on' : ''}" data-act="tool-${t}" data-tip="${tip}">${ic(t)}</button>`).join('')
     + `<span class="sep"></span><button data-act="fetch-osm" data-tip="既存道路を取得 (OSM)">${ic('roads')}</button><button data-act="add-image" data-tip="下絵画像を追加">${ic('image')}</button>`;
   const u = $('[data-act=undo]'), r = $('[data-act=redo]');
@@ -391,6 +396,7 @@ function setValue(key, raw, live) {
     case 'img.opacity': set(im, 'opacity', isFinite(v) ? Math.max(0.05, Math.min(1, v / 100)) : null); break;
     case 'base.opacity': if (isFinite(v)) { project.baseOpacity = Math.max(0, Math.min(1, v / 100)); baseLayer && baseLayer.setOpacity(project.baseOpacity); } break;
     case 'googleKey': project.googleKey = raw.trim(); save(); return;
+    case 'healTol': if (v > 0) project.healTol = Math.min(50, v); save(); return;
     case 'existingWidth': project.existingWidth = raw === '1'; save(); return renderExisting();
     case 'base': { const prev = project.base; setBase(raw).then((ok) => { if (!ok) project.base = prev; save(); renderPanels(); }); return; }
     default: return;
@@ -434,6 +440,9 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'v') setTool('select');
   else if (k === 'p' || k === 'r') setTool('draw');
   else if (k === 'm') setTool('measure');
+  else if (k === 'l') setTool(ui.tool === 'exlink' ? 'select' : 'exlink');
+  else if (k === 'enter' && ui.tool === 'exlink') { ui.link.cursor = null; finishLink(null); }
+  else if (k === 'backspace' && ui.tool === 'exlink') { e.preventDefault(); ui.link.pts.pop(); if (!ui.link.pts.length) { ui.link.start = null; ui.link.cursor = null; } renderMap(); }
   else if (k === '?') showHelp();
   else if (k === 'enter' && ui.tool === 'draw') { ui.draw.cursor = null; finishDraw(); }
   else if (k === 'escape') { if (!$('#modal').hidden) $('#modal').hidden = true; else if (ui.tool !== 'select') setTool('select'); else select(null); }
@@ -526,6 +535,8 @@ function act(a, el) {
     case 'del-existing': return ui.sel && ui.sel.type === 'existing' && deleteExisting(ui.sel.id);
     case 'del-existing-piece': return deleteExistingPiece();
     case 'dedupe-existing': return dedupeExisting();
+    case 'heal-existing': return healExisting(project.healTol || 8);
+    case 'tool-exlink': return setTool(ui.tool === 'exlink' ? 'select' : 'exlink');
     case 'vis-existing': project.existingVisible = !project.existingVisible; save(); renderExisting(); return renderPanels();
     case 'add-image': return $('#fileImage').click();
     case 'sel-image': return select({ type: 'image' });
@@ -674,6 +685,7 @@ function showHelp() {
       <li><b>幅員・車線数</b>: 道路を選択すると右パネルの一番上に表示（<b>−／＋</b> で車線数、車線幅・路肩・歩道を入力）。何も選択していないときは次に描く道路の既定値を設定できます。</li>
       <li>既存道路（緑の線）は左パネルで「中心線」/「幅員どおり」の表示を切替。クリックすると交差点・屈曲点で区切られた区間が選択され、<kbd>Delete</kbd> でその区間だけを削除（パネルから道路全体も削除可）。OSM と地理院を両方取得しても重なる線は自動で除外されます（既存データは「重複を除去」）。</li>
       <li>既存道路（緑の線）や他の計画道路の近くでは緑の丸に吸着し、そこに<b>接続</b>します。接続後は右パネルで「交差・T字」か「延伸（接線方向に拘束）」を選べます。</li>
+      <li><b>既存道路の途切れ</b>: 実際はつながっているのに線が途切れている所は、左パネルの「途切れを修復」（許容距離以内のつながっていない端点を自動で延ばす）、<kbd>L</kbd>「手でつなぐ・描き足す」（端点や道路上をクリック → 経由点 → つなぐ先の道路をクリック）、または既存道路を選択して端点の ○ をドラッグして直せます。</li>
       <li><kbd>V</kbd> 選択: 道路をクリック → IP ハンドルをドラッグ。線上の小さな丸をクリックすると IP を追加。<kbd>Delete</kbd> で削除。</li>
       <li>右パネルの数値はラベルを左右にドラッグ、または <kbd>↑</kbd><kbd>↓</kbd>（<kbd>Shift</kbd> で 10 倍）で増減できます。</li>
       <li>地図左上の検索欄（<kbd>/</kbd>）で地名・住所・施設名・緯度経度を検索。住所は国土地理院、施設名などは OpenStreetMap（Nominatim）の結果を統合して表示します。</li>
