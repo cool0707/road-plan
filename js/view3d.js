@@ -13,12 +13,12 @@ const V3D = (() => {
     none: { name: 'なし（ジオラマ）' },
   };
   const SHOTS = { screen2: '画面の 2 倍', fhd: '1920 × 1080', '4k': '3840 × 2160', sq: '2048 × 2048' };
-  const defOpts = { tex: 'photo', exag: 1, existing: true, lamps: true, sunAz: 150, sunAlt: 38, shot: 'screen2', caption: true, preview: false };
+  const defOpts = { tex: 'photo', exag: 1, existing: true, lamps: true, sunAz: 150, sunAlt: 38, shot: 'screen2', caption: true, preview: false, trees: 'auto', treeDensity: 80, brush: 20 };
   let opts = Object.assign({}, defOpts);
   try { Object.assign(opts, JSON.parse(localStorage.getItem(OPT_KEY)) || {}); } catch (e) { /* 既定値 */ }
   const saveOpts = () => { try { localStorage.setItem(OPT_KEY, JSON.stringify(opts)); } catch (e) { /* 無視 */ } };
 
-  const st = { open: false, ready: null, el: null, renderer: null, scene: null, camera: null, controls: null, world: null, sun: null, raf: 0, ro: null, building: 0, dirty: 0, info: null, texCache: new Map() };
+  const st = { open: false, ready: null, el: null, renderer: null, scene: null, camera: null, controls: null, world: null, sun: null, raf: 0, ro: null, building: 0, dirty: 0, info: null, texCache: new Map(), trees: null, terrain: null, autoMask: null };
   let T = null; // window.THREE
 
   /* ───────── 読み込み・開閉 ───────── */
@@ -43,10 +43,12 @@ const V3D = (() => {
     cancelAnimationFrame(st.raf); st.raf = 0;
     if (st.ro) st.ro.disconnect();
     if (st.world) disposeTree(st.world);
+    if (st.trees) disposeTree(st.trees);
+    brush.mode = null; brush.ring = null;
     st.controls && st.controls.dispose();
     st.renderer && (st.renderer.dispose(), st.renderer.forceContextLoss());
     st.el && st.el.remove();
-    Object.assign(st, { el: null, renderer: null, scene: null, camera: null, controls: null, world: null, sun: null, info: null });
+    Object.assign(st, { el: null, renderer: null, scene: null, camera: null, controls: null, world: null, sun: null, info: null, trees: null, terrain: null });
     $('[data-act=view3d]') && $('[data-act=view3d]').classList.remove('on');
   }
   const toggle = () => (st.open ? close() : open());
@@ -69,6 +71,12 @@ const V3D = (() => {
         <div class="v3row"><span>地表</span>${sel('tex', TEX)}</div>
         ${rng('exag', '高さ強調', 1, 5, 0.5, '×')}
         ${chk('existing', '既存道路')}${chk('lamps', '街路灯')}
+        <div class="v3sub">木（森）<b class="v3cnt" data-out="treeCount"></b></div>
+        <div class="v3row"><span>範囲</span>${sel('trees', { auto: '航空写真から自動＋塗った範囲', paint: '塗った範囲だけ', off: '木なし' })}</div>
+        ${rng('treeDensity', '密度', 10, 100, 5, '%')}
+        <div class="v3btns"><button class="btn" data-v3act="brush-plant" title="3D 上を左ドラッグして木を植える範囲を塗る">🌲 塗って植える</button><button class="btn" data-v3act="brush-erase" title="左ドラッグでなぞった範囲の木を消す（自動判定の森も消せます）">消す</button></div>
+        ${rng('brush', 'ブラシ', 4, 80, 2, 'm')}
+        <div class="v3btns"><button class="btn" data-v3act="forest-clear" title="塗って植えた範囲・消した範囲をすべて取り消す">塗った範囲をクリア</button></div>
         <div class="v3sub">太陽（撮影時の影）</div>
         ${rng('sunAz', '方位', 0, 359, 1, '°')}
         ${rng('sunAlt', '高度', 5, 85, 1, '°')}
@@ -86,9 +94,12 @@ const V3D = (() => {
       const t = e.target, k = t.dataset.v3; if (!k) return;
       const v = t.type === 'checkbox' ? t.checked : t.type === 'range' ? +t.value : t.value;
       opts[k] = v; saveOpts();
-      const out = el.querySelector(`[data-out="${k}"]`); if (out) out.textContent = v + (k === 'exag' ? '×' : '°');
+      const out = el.querySelector(`[data-out="${k}"]`); if (out) out.textContent = v + ({ exag: '×', treeDensity: '%', brush: 'm' }[k] || '°');
       if (k === 'tex' || k === 'existing' || k === 'lamps') return rebuild(false);
-      if (k === 'exag') { st.world.scale.y = v; placeSun(); }
+      if (k === 'exag') { st.world.scale.y = v; placeSun(); buildTrees(); }
+      if (k === 'trees') { ensureAutoMask().then(buildTrees); return; }
+      if (k === 'treeDensity') return buildTrees();
+      if (k === 'brush') return;
       if (k === 'sunAz' || k === 'sunAlt') placeSun();
       if (k === 'preview') setShadows(v);
       requestRender();
@@ -97,6 +108,9 @@ const V3D = (() => {
       const b = e.target.closest('[data-v3act]'); if (!b) return;
       const a = b.dataset.v3act;
       if (a === 'close') close();
+      else if (a === 'brush-plant') setBrush('plant');
+      else if (a === 'brush-erase') setBrush('erase');
+      else if (a === 'forest-clear') { const S = forestSets(); if (!S.plant.size && !S.erase.size) return; if (!confirm('塗って植えた範囲・消した範囲をすべて取り消しますか？')) return; S.plant.clear(); S.erase.clear(); forestStore(); buildTrees(); }
       else if (a === 'shot') shoot();
       else if (a === 'reset') { resetView(); requestRender(); }
       else if (a === 'top') { topView(); requestRender(); }
@@ -126,6 +140,7 @@ const V3D = (() => {
       const w = box.clientWidth || 1, h = box.clientHeight || 1;
       r.setSize(w, h); st.camera.aspect = w / h; st.camera.updateProjectionMatrix(); requestRender();
     };
+    initBrush();
     st.ro = new ResizeObserver(resize); st.ro.observe(box); resize();
   }
   /* 描画は変化があったときだけ（減衰が止まるまで数フレーム続ける） */
@@ -207,15 +222,15 @@ const V3D = (() => {
   }
 
   /* ───────── 地表テクスチャ（背景タイルを 1 枚の画像に） ───────── */
-  async function groundTexture(ex) {
-    const def = TEX[opts.tex];
+  async function groundTexture(ex, kind = opts.tex) {
+    const def = TEX[kind];
     if (!def || !def.url) return null;
     const ll0 = P.toLL(ex.x0, ex.y1), ll1 = P.toLL(ex.x1, ex.y0), lat = (ll0.lat + ll1.lat) / 2;
     const mpp0 = 156543.03392 * Math.cos((lat * Math.PI) / 180);
     const z = Math.max(8, Math.min(def.max, Math.floor(Math.log2((mpp0 * 3000) / ex.D))));
     const a = tileXY(ll0, z), b = tileXY(ll1, z);
     const tx0 = Math.floor(a.fx), ty0 = Math.floor(a.fy), tx1 = Math.floor(b.fx), ty1 = Math.floor(b.fy);
-    const key = `${opts.tex}/${z}/${tx0}/${ty0}/${tx1}/${ty1}`;
+    const key = `${kind}/${z}/${tx0}/${ty0}/${tx1}/${ty1}`;
     const frame = { z, ox: tx0 * 256, oy: ty0 * 256, W: (tx1 - tx0 + 1) * 256, H: (ty1 - ty0 + 1) * 256 };
     if (st.texCache.has(key)) return Object.assign({ tex: st.texCache.get(key) }, frame);
     const c = document.createElement('canvas'); c.width = frame.W; c.height = frame.H;
@@ -367,7 +382,8 @@ const V3D = (() => {
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec2 vEarth;')
         .replace('#include <map_fragment>', '#include <map_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.32, 0.10), clamp(vEarth.x, 0.0, 1.0) * 0.6);\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.40, 0.29, 0.18), clamp(vEarth.y, 0.0, 1.0) * 0.7);');
     };
-    world.add(mesh(tg, tm));
+    const terrainMesh = mesh(tg, tm); terrainMesh.name = 'terrain';
+    world.add(terrainMesh);
     // ジオラマの側面と底
     let hmin = Infinity; for (let k = 0; k < N; k++) hmin = Math.min(hmin, H[k]);
     const bottom = hmin - Math.max(6, ex.D * 0.035), side = [];
@@ -479,6 +495,257 @@ const V3D = (() => {
     return world;
   }
 
+  /* ───────── 木（森） ─────────
+   * 森の範囲 = 航空写真からの自動判定（緑の度合い ExG ＋ 樹冠の肌理＝輝度のばらつき）と、3D 上で塗った範囲。
+   * 植え方はゲームの植生配置と同じ考え方: ジッター格子（ブルーノイズ風の散らし）に値ノイズを重ねて
+   * 密度のむら・樹種の群（スギ・ヒノキの植林／広葉樹）・樹高・色を変え、InstancedMesh でまとめて描く。 */
+  const FCELL = 4, MAXT = 60000;
+  let fsets = null;
+  function forestSets() {
+    if (!project.forest) project.forest = { cell: FCELL, plant: [], erase: [] };
+    if (!fsets || fsets.src !== project.forest) fsets = { src: project.forest, plant: new Set(project.forest.plant), erase: new Set(project.forest.erase) };
+    return fsets;
+  }
+  function forestStore() { const S = forestSets(); S.src.plant = [...S.plant]; S.src.erase = [...S.erase]; save(); }
+  const hash = (i, j, k = 0) => {
+    let h = Math.imul(i | 0, 374761393) ^ Math.imul(j | 0, 668265263) ^ Math.imul(k + 1, 1442695041);
+    h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+  const sstep = (v, a, b) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+  function vnoise(x, y, k) {
+    const i = Math.floor(x), j = Math.floor(y), u = sstep(x - i, 0, 1), v = sstep(y - j, 0, 1);
+    const a = hash(i, j, k), b = hash(i + 1, j, k), c = hash(i, j + 1, k), d = hash(i + 1, j + 1, k);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  }
+  const fbm = (x, y, k) => 0.6 * vnoise(x, y, k) + 0.3 * vnoise(x * 2.1, y * 2.1, k + 11) + 0.1 * vnoise(x * 4.3, y * 4.3, k + 23);
+
+  /* 航空写真から森らしさ 0〜1 の格子を作る */
+  async function autoForestMask(ex) {
+    const t = await groundTexture(ex, 'photo').catch(() => null);
+    if (!t) return null;
+    const cv = t.tex.image, W = cv.width, H = cv.height;
+    let px;
+    try { px = cv.getContext('2d').getImageData(0, 0, W, H).data; } catch (e) { return null; }
+    const cell = Math.max(4, ex.D / 400), nx = Math.ceil(ex.w / cell), ny = Math.ceil(ex.h / cell);
+    let m = new Float32Array(nx * ny);
+    const win = Math.max(1, Math.round(2.5 / ((156543.03392 * Math.cos((P.toLL(ex.cx, ex.cy).lat * Math.PI) / 180)) / 2 ** t.z))); // 約 2.5m の窓
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const q = tileXY(P.toLL(ex.x0 + (i + 0.5) * cell, ex.y1 - (j + 0.5) * cell), t.z);
+      const X = Math.round(q.fx * 256 - t.ox), Y = Math.round(q.fy * 256 - t.oy);
+      if (X < win || Y < win || X >= W - win || Y >= H - win) continue;
+      let r = 0, g = 0, b = 0, s1 = 0, s2 = 0, n = 0;
+      for (let dy = -win; dy <= win; dy++) for (let dx = -win; dx <= win; dx++) {
+        const k = ((Y + dy) * W + X + dx) * 4, l = 0.3 * px[k] + 0.59 * px[k + 1] + 0.11 * px[k + 2];
+        r += px[k]; g += px[k + 1]; b += px[k + 2]; s1 += l; s2 += l * l; n++;
+      }
+      r /= n; g /= n; b /= n;
+      const lum = s1 / n, sd = Math.sqrt(Math.max(0, s2 / n - lum * lum)), exg = (2 * g - r - b) / (r + g + b + 1) * 3; // 正規化 ExG（影でも効く）
+      m[j * nx + i] = sstep(exg, 0.04, 0.22) * (1 - sstep(lum, 120, 175)) * (0.35 + 0.65 * sstep(sd, 4, 12));
+    }
+    for (let pass = 0; pass < 2; pass++) { // 3×3 平均でならす
+      const o = new Float32Array(nx * ny);
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        let s = 0, c = 0;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < nx && b < ny) { s += m[b * nx + a]; c++; } }
+        o[j * nx + i] = s / c;
+      }
+      m = o;
+    }
+    for (let k = 0; k < m.length; k++) m[k] = sstep(m[k], 0.22, 0.5);
+    return { cell, nx, ny, m, x0: ex.x0, y1: ex.y1, key: `${ex.x0}/${ex.y1}/${ex.w}/${ex.h}` };
+  }
+  async function ensureAutoMask() {
+    if (opts.trees !== 'auto' || !st.info) return;
+    const ex = st.info.ex, key = `${ex.x0}/${ex.y1}/${ex.w}/${ex.h}`;
+    if (st.autoMask && st.autoMask.key === key) return;
+    st.autoMask = await busy('航空写真から森の範囲を判定中…', () => autoForestMask(ex));
+    if (!st.autoMask) toast('航空写真を取得できないため自動判定できません。「塗った範囲だけ」で木を植えてください', 'err');
+  }
+  function forestAt(x, y) {
+    const S = forestSets();
+    if (S.plant.size || S.erase.size) {
+      const key = Math.floor(x / FCELL) + ',' + Math.floor(y / FCELL);
+      if (S.erase.has(key)) return 0;
+      if (S.plant.has(key)) return 1;
+    }
+    const A = st.autoMask;
+    if (opts.trees !== 'auto' || !A) return 0;
+    const i = Math.floor((x - A.x0) / A.cell), j = Math.floor((A.y1 - y) / A.cell);
+    return i < 0 || j < 0 || i >= A.nx || j >= A.ny ? 0 : A.m[j * A.nx + i];
+  }
+  /* 道路・のり面・既存道路の上には植えない */
+  function treeExclusion(ex, G, roadsX) {
+    const { nx, ny, sp } = G, m = new Uint8Array(nx * ny);
+    const stamp = (x, y, r) => {
+      const i0 = Math.max(0, Math.floor((x - r - ex.x0) / sp)), i1 = Math.min(nx - 1, Math.ceil((x + r - ex.x0) / sp));
+      const j0 = Math.max(0, Math.floor((ex.y1 - y - r) / sp)), j1 = Math.min(ny - 1, Math.ceil((ex.y1 - y + r) / sp));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) { const dx = G.gx(i) - x, dy = G.gy(j) - y; if (dx * dx + dy * dy <= r * r) m[j * nx + i] = 1; }
+    };
+    for (const R of roadsX) for (let q = 0; q < R.rows.length; q += 2) stamp(R.rows[q].x, R.rows[q].y, R.E + 3);
+    for (const e of project.existing) {
+      const xy = e.pts.map((q) => P.toXY(q)), r = Math.max(2.5, e.width || 5) / 2 + 1.5;
+      for (let k = 1; k < xy.length; k++) {
+        const a = xy[k - 1], b = xy[k], l = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(1, Math.ceil(l / sp));
+        if (Math.max(a.x, b.x) < ex.x0 - r || Math.min(a.x, b.x) > ex.x1 + r || Math.max(a.y, b.y) < ex.y0 - r || Math.min(a.y, b.y) > ex.y1 + r) continue;
+        for (let s = 0; s <= n; s++) stamp(a.x + ((b.x - a.x) * s) / n, a.y + ((b.y - a.y) * s) / n, r);
+      }
+    }
+    for (let k = 0; k < nx * ny; k++) if (Math.abs(G.H[k] - G.H0[k]) > 0.05) m[k] = 1;
+    return m;
+  }
+
+  /* 樹木の形（高さ 1 の単位形状）。ローポリ＋下ほど暗い頂点色で樹冠の陰影を出す */
+  function treeGeos() {
+    const merge = (list, dark) => {
+      const arr = list.map((g) => (g.index ? g.toNonIndexed() : g)), n = arr.reduce((a, g) => a + g.attributes.position.count, 0);
+      const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+      let o = 0;
+      for (const g of arr) { pos.set(g.attributes.position.array, o * 3); o += g.attributes.position.count; g.dispose(); }
+      for (let k = 0; k < n; k++) {
+        const x = pos[k * 3], y = pos[k * 3 + 1], z = pos[k * 3 + 2];
+        if (dark) { const j = (hash(Math.round(x * 997), Math.round(y * 991), Math.round(z * 983)) - 0.5) * 0.06; pos[k * 3] += j; pos[k * 3 + 2] -= j; pos[k * 3 + 1] += j * 0.7; }
+        const c = dark ? 0.5 + 0.6 * Math.min(1, Math.max(0, (y - 0.15) / 0.8)) : 1;
+        col[k * 3] = col[k * 3 + 1] = col[k * 3 + 2] = c;
+      }
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.BufferAttribute(pos, 3)); g.setAttribute('color', new T.BufferAttribute(col, 3)); g.computeVertexNormals();
+      return g;
+    };
+    const cone = (r, h, y) => { const g = new T.ConeGeometry(r, h, 7, 1); g.translate(0, y, 0); return g; };
+    const ball = (r, x, y, z) => { const g = new T.IcosahedronGeometry(r, 0); g.translate(x, y, z); return g; };
+    const trunk = new T.CylinderGeometry(0.018, 0.032, 0.5, 5); trunk.translate(0, 0.25, 0);
+    return {
+      conifer: merge([cone(0.17, 0.42, 0.40), cone(0.135, 0.36, 0.60), cone(0.085, 0.28, 0.82)], true),
+      broad: merge([ball(0.27, 0, 0.6, 0), ball(0.2, 0.19, 0.5, 0.08), ball(0.21, -0.16, 0.52, -0.1), ball(0.18, 0.03, 0.76, 0.02), ball(0.17, -0.02, 0.48, 0.2)], true),
+      trunk: merge([trunk], false),
+    };
+  }
+  function buildTrees() {
+    if (st.trees) { disposeTree(st.trees); st.trees = null; }
+    if (!st.info || !st.open) return;
+    const S = forestSets();
+    if (opts.trees === 'off' || (opts.trees !== 'auto' && !S.plant.size)) return requestRender();
+    const { ex, G, base, excl } = st.info;
+    // 植える範囲（塗った範囲だけのときはその外接矩形）
+    let bx0 = ex.x0, by0 = ex.y0, bx1 = ex.x1, by1 = ex.y1;
+    if (opts.trees !== 'auto') {
+      bx0 = by0 = Infinity; bx1 = by1 = -Infinity;
+      for (const k of S.plant) { const [i, j] = k.split(',').map(Number); bx0 = Math.min(bx0, i * FCELL); by0 = Math.min(by0, j * FCELL); bx1 = Math.max(bx1, (i + 1) * FCELL); by1 = Math.max(by1, (j + 1) * FCELL); }
+      bx0 = Math.max(bx0, ex.x0); by0 = Math.max(by0, ex.y0); bx1 = Math.min(bx1, ex.x1); by1 = Math.min(by1, ex.y1);
+      if (!(bx1 > bx0 && by1 > by0)) return requestRender();
+    }
+    // 森の面積から間隔を決める（本数の上限 MAXT。間引いたぶん木を大きくする）
+    const dens = opts.treeDensity / 100, cs = Math.max(6, Math.max(bx1 - bx0, by1 - by0) / 150);
+    let area = 0;
+    for (let y = by0 + cs / 2; y < by1; y += cs) for (let x = bx0 + cs / 2; x < bx1; x += cs) area += forestAt(x, y) * cs * cs;
+    const sp = Math.max(4.5, Math.sqrt((area * dens) / MAXT)), big = Math.min(1.8, Math.sqrt(sp / 4.5));
+    const items = [];
+    const i0 = Math.floor(bx0 / sp), i1 = Math.ceil(bx1 / sp), j0 = Math.floor(by0 / sp), j1 = Math.ceil(by1 / sp);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const x = (i + 0.1 + 0.8 * hash(i, j, 1)) * sp, y = (j + 0.1 + 0.8 * hash(i, j, 2)) * sp; // ジッター格子
+      if (x < ex.x0 + 2 || x > ex.x1 - 2 || y < ex.y0 + 2 || y > ex.y1 - 2) continue;
+      const f = forestAt(x, y); if (f <= 0.02) continue;
+      const clump = 0.55 + 0.9 * fbm(x / 45, y / 45, 3); // 群生のむら（ギャップ・疎林）
+      if (hash(i, j, 3) > f * dens * clump) continue;
+      const gi = Math.round((x - ex.x0) / G.sp), gj = Math.round((ex.y1 - y) / G.sp);
+      if (excl[Math.min(G.ny - 1, Math.max(0, gj)) * G.nx + Math.min(G.nx - 1, Math.max(0, gi))]) continue;
+      const conifer = fbm(x / 160, y / 160, 7) + (hash(i, j, 4) - 0.5) * 0.25 > 0.55; // 植林（スギ・ヒノキ）の群
+      const edge = 0.65 + 0.35 * Math.min(1, f * 1.4), r = hash(i, j, 5);
+      const h = (conifer ? 13 + 10 * r : 8 + 8 * r) * edge * big;
+      items.push({ x, y, z: terrainAt(G, ex, x, y), h, conifer, w: 0.8 + 0.4 * hash(i, j, 6), rot: hash(i, j, 7) * Math.PI * 2, c: hash(i, j, 8) });
+    }
+    if (!items.length) return requestRender();
+    const geos = treeGeos(), group = new T.Group();
+    const crownM = new T.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true });
+    const trunkM = new T.MeshStandardMaterial({ color: 0x5b4636, roughness: 1 });
+    const nC = items.filter((t) => t.conifer).length;
+    const mC = new T.InstancedMesh(geos.conifer, crownM, Math.max(1, nC)), mB = new T.InstancedMesh(geos.broad, crownM, Math.max(1, items.length - nC)), mT = new T.InstancedMesh(geos.trunk, trunkM, items.length);
+    mC.count = nC; mB.count = items.length - nC;
+    const M = new T.Matrix4(), q = new T.Quaternion(), up = new T.Vector3(0, 1, 0), p = new T.Vector3(), s = new T.Vector3(), col = new T.Color();
+    let a = 0, b = 0;
+    items.forEach((t, k) => {
+      p.set(t.x - ex.cx, (t.z - base) * opts.exag - 0.4, -(t.y - ex.cy)); q.setFromAxisAngle(up, t.rot); s.set(t.h * t.w, t.h, t.h * t.w);
+      M.compose(p, q, s); mT.setMatrixAt(k, M);
+      if (t.conifer) { col.setHSL(0.29 + 0.05 * t.c, 0.38 + 0.12 * t.c, 0.13 + 0.06 * t.c); mC.setMatrixAt(a, M); mC.setColorAt(a++, col); }
+      else { col.setHSL(0.2 + 0.08 * t.c, 0.42 + 0.15 * t.c, 0.2 + 0.1 * t.c); mB.setMatrixAt(b, M); mB.setColorAt(b++, col); }
+    });
+    for (const m of [mC, mB, mT]) { m.castShadow = m.receiveShadow = true; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; m.computeBoundingSphere(); }
+    if (!nC) mC.visible = false; if (nC === items.length) mB.visible = false;
+    group.add(mC, mB, mT);
+    st.trees = group; st.scene.add(group);
+    if (st.renderer.shadowMap.enabled) { crownM.needsUpdate = trunkM.needsUpdate = true; }
+    const cnt = st.el.querySelector('[data-out=treeCount]'); if (cnt) cnt.textContent = `${items.length.toLocaleString()} 本`;
+    requestRender();
+  }
+
+  /* ブラシで森を塗る／消す */
+  const brush = { mode: null, ring: null, down: false, timer: 0, raf: 0, pending: null };
+  function setBrush(mode) {
+    brush.mode = brush.mode === mode ? null : mode;
+    const c = st.controls;
+    c.mouseButtons = brush.mode ? { LEFT: null, MIDDLE: T.MOUSE.DOLLY, RIGHT: T.MOUSE.ROTATE } : { LEFT: T.MOUSE.ROTATE, MIDDLE: T.MOUSE.DOLLY, RIGHT: T.MOUSE.PAN };
+    c.touches = { ONE: brush.mode ? null : T.TOUCH.ROTATE, TWO: T.TOUCH.DOLLY_PAN };
+    if (brush.mode && opts.trees === 'off') { opts.trees = 'paint'; saveOpts(); st.el.querySelector('[data-v3=trees]').value = 'paint'; }
+    st.el.querySelectorAll('[data-v3act^=brush-]').forEach((b) => b.classList.toggle('on', b.dataset.v3act === 'brush-' + brush.mode));
+    st.el.querySelector('.v3hint').textContent = brush.mode
+      ? `左ドラッグ: ${brush.mode === 'plant' ? '木を植える' : '木を消す'}　右ドラッグ: 回転　Shift+右ドラッグ: 移動　ホイール: ズーム　Esc: ブラシ終了`
+      : '左ドラッグ: 回転　右ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム';
+    st.renderer.domElement.style.cursor = brush.mode ? 'crosshair' : '';
+    if (brush.ring) brush.ring.visible = false;
+    requestRender();
+  }
+  function brushHit(e) {
+    if (!st.terrain) return null;
+    const rc = st.renderer.domElement.getBoundingClientRect(), ndc = new T.Vector2(((e.clientX - rc.left) / rc.width) * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1);
+    const ray = new T.Raycaster(); ray.setFromCamera(ndc, st.camera);
+    const hit = ray.intersectObject(st.terrain, false)[0];
+    if (!hit) return null;
+    const ex = st.info.ex;
+    return { p: hit.point, x: hit.point.x + ex.cx, y: ex.cy - hit.point.z };
+  }
+  function showRing(h) {
+    if (!brush.ring) {
+      const g = new T.RingGeometry(0.92, 1, 48); g.rotateX(-Math.PI / 2);
+      brush.ring = new T.Mesh(g, new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false }));
+      brush.ring.renderOrder = 10; st.scene.add(brush.ring);
+    }
+    brush.ring.visible = !!h;
+    if (h) { brush.ring.position.copy(h.p).y += 0.5; brush.ring.scale.setScalar(opts.brush); brush.ring.material.color.set(brush.mode === 'plant' ? 0x9cff7a : 0xff8a7a); }
+    requestRender();
+  }
+  function stamp(h) {
+    const S = forestSets(), r = opts.brush;
+    for (let j = Math.floor((h.y - r) / FCELL); j <= Math.floor((h.y + r) / FCELL); j++) for (let i = Math.floor((h.x - r) / FCELL); i <= Math.floor((h.x + r) / FCELL); i++) {
+      const cx = (i + 0.5) * FCELL - h.x, cy = (j + 0.5) * FCELL - h.y;
+      if (cx * cx + cy * cy > r * r) continue;
+      const k = i + ',' + j;
+      if (brush.mode === 'plant') { S.plant.add(k); S.erase.delete(k); } else { S.plant.delete(k); S.erase.add(k); }
+    }
+    if (!brush.timer) brush.timer = setTimeout(() => { brush.timer = 0; buildTrees(); }, 160);
+  }
+  function initBrush() {
+    const cv = st.renderer.domElement;
+    cv.addEventListener('pointermove', (e) => {
+      if (!brush.mode) return;
+      brush.pending = e;
+      if (brush.raf) return;
+      brush.raf = requestAnimationFrame(() => {
+        brush.raf = 0; const ev = brush.pending, h = brushHit(ev);
+        showRing(h);
+        if (brush.down && h) stamp(h);
+      });
+    });
+    cv.addEventListener('pointerdown', (e) => {
+      if (!brush.mode || e.button !== 0) return;
+      brush.down = true; cv.setPointerCapture(e.pointerId);
+      const h = brushHit(e); if (h) stamp(h);
+    });
+    const up = () => { if (!brush.down) return; brush.down = false; clearTimeout(brush.timer); brush.timer = 0; forestStore(); buildTrees(); };
+    cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+    cv.addEventListener('pointerleave', () => { if (brush.mode && !brush.down) showRing(null); });
+  }
+
   /* ───────── 組み立て ───────── */
   async function rebuild(first) {
     if (!st.open) return;
@@ -494,8 +761,10 @@ const V3D = (() => {
         world.scale.y = opts.exag;
         if (st.world) disposeTree(st.world);
         st.world = world; st.scene.add(world);
+        st.terrain = world.getObjectByName('terrain');
         const prev = st.info;
-        st.info = { ex, base, G, roadsX, hmax: Math.max(...G.H) - base };
+        st.info = { ex, base, G, roadsX, hmax: G.H.reduce((a, h) => Math.max(a, h), -Infinity) - base, excl: treeExclusion(ex, G, roadsX) };
+        await ensureAutoMask(); buildTrees();
         placeSun(); setShadows(opts.preview);
         if (first || !prev || Math.abs(prev.ex.D - ex.D) > 1 || Math.abs(prev.ex.cx - ex.cx) > 1 || Math.abs(prev.ex.cy - ex.cy) > 1) resetView();
         const tx = TEX[opts.tex];
@@ -630,6 +899,7 @@ const V3D = (() => {
     const inForm = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
     if (inForm && !st.el.contains(e.target)) return; // 右パネルでの数値入力は通常どおり
     if (!$('#modal').hidden) return;
+    if (e.key === 'Escape' && brush.mode) { setBrush(brush.mode); e.preventDefault(); e.stopImmediatePropagation(); return; }
     if (e.key === 'Escape') { close(); e.preventDefault(); e.stopImmediatePropagation(); return; }
     if ((e.ctrlKey || e.metaKey) && /^[zy]$/i.test(e.key)) return; // undo / redo は通す
     e.stopImmediatePropagation();

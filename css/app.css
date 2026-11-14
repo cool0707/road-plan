@@ -267,3 +267,7 @@ table.vtbl input.cell:hover { border-color: var(--line); } table.vtbl input.cell
 .modal-card .foot .muted { margin-right: auto; align-self: center; }
 a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 @media (max-width: 700px) { #v3d .v3panel { width: calc(100% - 24px); max-height: 46%; overflow: auto; } #v3d .v3hint { display: none; } }
+#v3d .v3panel { max-height: calc(100% - 24px); overflow-y: auto; }
+#v3d .v3btns .btn.on { background: var(--accent-bg); border-color: var(--accent); color: #007be5; }
+#v3d .v3cnt { float: right; font-weight: 500; color: var(--text2); }
+#v3d .v3row > span, #v3d .v3rng > span { flex: none; white-space: nowrap; } #v3d .v3row select { min-width: 0; }
