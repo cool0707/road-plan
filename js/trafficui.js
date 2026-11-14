@@ -405,10 +405,10 @@ const TrafficUI = (() => {
       }
       const list = [];
       for (const s of secs.values()) { const o = censusObs(s); if (o && o.lines.some((l) => { for (let i = 0; i < l.length; i += 2) if (b.contains([l[i], l[i + 1]])) return true; return false; })) list.push(o); }
-      return { list, miss, have };
+      return { list, miss: ix.kens && ix.kens.length >= 47 ? 0 : miss, have, full: !!(ix.kens && ix.kens.length >= 47) };
     }).catch((e) => ({ err: e }));
     if (res.err) return toast('センサスのデータを読み込めませんでした: ' + res.err.message, 'err');
-    if (!res.list.length) return toast(res.have ? 'この範囲にセンサスの対象区間（都道府県道以上）はありません' : 'この範囲のセンサスデータは同梱されていません（README の「交通量データ」を参照）', 'err');
+    if (!res.list.length) return toast(res.have || res.full ? 'この範囲にセンサスの対象区間（都道府県道以上）はありません' : 'この範囲のセンサスデータは同梱されていません（README の「交通量データ」を参照）', 'err');
     const ids = new Set(res.list.map((o) => o.id)), old = new Map(tr().obs.map((o) => [o.id, o]));
     res.list.forEach((o) => { const p = old.get(o.id); if (p) { o.off = p.off; o.pin = p.pin; } });
     tr().obs = tr().obs.filter((o) => !ids.has(o.id)).concat(res.list);

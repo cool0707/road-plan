@@ -148,7 +148,7 @@ const ptsOf = (id) => { const l = lines.get(id); return l ? l.flat() : null; };
 
 const tiles = new Map(), n2 = 2 ** opt.z;
 const tx = (lng) => Math.floor(((lng + 180) / 360) * n2), ty = (lat) => { const r = (lat * Math.PI) / 180; return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n2); };
-let nOut = 0, nUnoriented = 0;
+let nOut = 0, nUnoriented = 0; const kens = new Set(); // 形状のある区間が 1 つでもある都道府県（47 そろえば全国）
 for (const [id, raw] of lines) {
   const s = secs.get(id); if (!s) continue;
   // 重複（タイルの重なり分）を除き、短すぎる断片を捨てて間引く
@@ -177,7 +177,7 @@ for (const [id, raw] of lines) {
     ps.map((p) => { let la = 0, lo = 0; return p.flatMap((q) => { const a = Math.round(q[1] * 1e5), b = Math.round(q[0] * 1e5), o = [a - la, b - lo]; la = a; lo = b; return o; }); })];
   const all = ps.flat(), xs = all.map((q) => tx(q[0])), ys = all.map((q) => ty(q[1]));
   for (let x = Math.min(...xs); x <= Math.max(...xs); x++) for (let y = Math.min(...ys); y <= Math.max(...ys); y++) { const k = `${x}/${y}`; (tiles.get(k) || tiles.set(k, []).get(k)).push(rec); }
-  nOut++;
+  nOut++; kens.add(id.slice(0, 2));
 }
 const out = path.resolve(root, opt.out);
 fs.rmSync(out, { recursive: true, force: true });
@@ -187,7 +187,7 @@ for (const [k, list] of tiles) {
 }
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, 'index.json'), JSON.stringify({
-  version: 1, z: opt.z, sections: nOut, tiles: [...tiles.keys()].sort(),
+  version: 1, z: opt.z, sections: nOut, kens: [...kens].sort(), tiles: [...tiles.keys()].sort(),
   source: '国土交通省 令和3年度 全国道路・街路交通情勢調査 一般交通量調査（箇所別基本表・時間帯別交通量表・一般交通量調査結果WEBマップ）を加工して作成',
   fields: ['区間番号', '道路種別', '路線名', '車線数', '代表沿道状況', '向きあり', '観測年月日', '下り:観測区分', '下り:小型12h', '下り:大型12h', '下り:24h', '上り:観測区分', '上り:小型12h', '上り:大型12h', '上り:24h', '昼夜率', 'ピーク比率%', '混雑度', '旅行速度[朝夕上り,朝夕下り,昼間上り,昼間下り]', '指定最高速度', '一方通行', '下り:[朝ピーク,夕ピーク]', '上り:[朝ピーク,夕ピーク]', '形状（緯度・経度×1e5 の差分、起点→終点）'],
 }));
