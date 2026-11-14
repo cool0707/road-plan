@@ -464,7 +464,7 @@ function showHelp() {
       <li>結果は簡易照査です。最終判断は条文・道路管理者の基準で行ってください。</li></ul>
     <h4>データ</h4><ul>
       <li>書き出し ▾ → PDF: 平面図（標準縮尺・背景地図つき）と線形計算書・照査結果を印刷ダイアログ経由で PDF 保存。</li>
-      <li>背景: 地理院タイル / OpenStreetMap / Google（Map Tiles API キーが必要）/ 任意の画像。</li>
+      <li>背景: 地理院タイル / 地理院ベクトル（Google 風）/ OpenStreetMap / Google（Map Tiles API キーが必要）/ 任意の画像。</li>
       <li>既存道路: OpenStreetMap（Overpass API）または国土地理院ベクトルタイル提供実験（道路中心線）。</li>
       <li>データはこのブラウザ内（localStorage / IndexedDB）にのみ保存されます。座標は最初の作図位置を原点としたローカル平面座標（X=東, Y=北, m）。</li></ul>
     <div class="foot"><button class="btn accent" data-act="close-modal">閉じる</button></div>`;

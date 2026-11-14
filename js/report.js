@@ -20,7 +20,8 @@ function planSvg(roads) {
   let out = '';
 
   // 背景タイル（表示中のベースマップ）
-  if (baseLayer && baseLayer._url) {
+  const tileUrl = baseLayer && (baseLayer._url || baseLayer.options.printUrl);
+  if (tileUrl) {
     const sw = P.toLL(minX, maxY - VH), ne = P.toLL(minX + VW, maxY);
     const tx = (lng, n) => ((lng + 180) / 360) * n, ty = (lat, n) => { const r = (lat * Math.PI) / 180; return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n; };
     const lngOf = (x, n) => (x / n) * 360 - 180, latOf = (y, n) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
@@ -28,7 +29,7 @@ function planSvg(roads) {
     for (; z > 3; z--) { n = 2 ** z; ax = Math.floor(tx(sw.lng, n)); bx = Math.floor(tx(ne.lng, n)); ay = Math.floor(ty(ne.lat, n)); by = Math.floor(ty(sw.lat, n)); if ((bx - ax + 1) * (by - ay + 1) <= 48) break; }
     for (let x = ax; x <= bx; x++) for (let y = ay; y <= by; y++) {
       const a = P.toXY([latOf(y, n), lngOf(x, n)]), b = P.toXY([latOf(y + 1, n), lngOf(x + 1, n)]);
-      const url = baseLayer._url.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+      const url = tileUrl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
       out += `<image href="${esc(url)}" x="${X(a.x)}" y="${Y(a.y)}" width="${(b.x - a.x + 0.02 * mm).toFixed(3)}" height="${(a.y - b.y + 0.02 * mm).toFixed(3)}" preserveAspectRatio="none" opacity="${Math.min(0.85, project.baseOpacity)}"/>`;
     }
   }

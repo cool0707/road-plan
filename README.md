@@ -1,6 +1,6 @@
 # Road Plan — 道路計画デザインツール
 
-地図（地理院タイル / OpenStreetMap / Google / 任意の画像）に重ねて道路の平面線形を描く、ブラウザだけで動くアプリです。
+地図（地理院タイル / 地理院ベクトルタイル / OpenStreetMap / Google / 任意の画像）に重ねて道路の平面線形を描く、ブラウザだけで動くアプリです。
 **▶ [アプリを開く（GitHub Pages）](https://cool0707.github.io/road-plan/)**
 
 サーバー・ビルド不要。`index.html` をブラウザで開くだけで動きます（データはブラウザ内にのみ保存）。
@@ -22,6 +22,8 @@
 3. `P` で道路を描く → 既存道路上をクリックして接続 → ダブルクリックで確定
 4. IP を選択して右パネルで R・A を調整、「照査」タブで適合を確認
 
+ベースマップ「地理院ベクトル（Google 風）」は国土地理院の最適化ベクトルタイルを MapLibre GL で Google マップ風の配色に描画します（WebGL 必須。PDF の背景は淡色ラスタで代用）。
+
 Google マップを背景にするには Google Maps Platform の **Map Tiles API** キーを左パネルに入力します。
 
 ## 注意
@@ -37,4 +39,4 @@ Google マップを背景にするには Google Maps Platform の **Map Tiles AP
 node --test test/geom.test.js
 ```
 
-構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `js/report.js`（PDF 用レポート）, `vendor/leaflet`（Leaflet 1.9.4）
+構成: `js/geom.js`（線形計算）, `js/rules.js`（基準値と照査）, `js/app.js`（地図・描画・ツール）, `js/panels.js`（UI・入出力）, `js/report.js`（PDF 用レポート）, `js/vectorstyle.js`（ベクトル地図のスタイル）, `vendor/leaflet`（Leaflet 1.9.4）, `vendor/maplibre`（MapLibre GL JS 5.24.0 + maplibre-gl-leaflet 0.1.4、ベクトル地図選択時のみ読み込み）
