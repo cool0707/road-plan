@@ -105,8 +105,8 @@ details.okgrp > summary { padding: 8px 12px; cursor: pointer; color: var(--text2
 /* ── stage ── */
 #stage { grid-area: stage; position: relative; overflow: hidden; background: #e9eaec; }
 #map { position: absolute; inset: 0; background: #e9eaec; font: inherit; }
-#map.tool-draw, #map.tool-measure, #map.tool-pick { cursor: crosshair; }
-#map.tool-draw .leaflet-interactive, #map.tool-measure .leaflet-interactive, #map.tool-pick .leaflet-interactive { cursor: crosshair; }
+#map.tool-draw, #map.tool-measure, #map.tool-pick, #map.tool-exlink { cursor: crosshair; }
+#map.tool-draw .leaflet-interactive, #map.tool-measure .leaflet-interactive, #map.tool-pick .leaflet-interactive, #map.tool-exlink .leaflet-interactive { cursor: crosshair; }
 #toolbar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 4px; padding: 6px; background: #fff; border-radius: 13px; box-shadow: var(--shadow); z-index: 1000; }
 #toolbar button { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; position: relative; }
 #toolbar button:hover { background: var(--bg2); }
@@ -149,6 +149,7 @@ details.okgrp > summary { padding: 8px 12px; cursor: pointer; color: var(--text2
 /* map overlays */
 .ip-h { width: 12px !important; height: 12px !important; background: #fff; border: 2px solid var(--accent); border-radius: 2px; box-shadow: 0 0 0 1px rgba(255,255,255,.6); }
 .ip-h.end { border-radius: 50%; } .ip-h.sel { background: var(--accent); } .ip-h.bad { border-color: var(--err); } .ip-h.bad.sel { background: var(--err); }
+.ex-end { border-color: #0f9d8f; cursor: move; }
 .ip-h.conn { box-shadow: 0 0 0 3px rgba(20,174,92,.45); }
 .mid-h { width: 8px !important; height: 8px !important; background: #fff; border: 1.5px solid var(--accent); border-radius: 50%; opacity: .7; }
 .mid-h:hover { opacity: 1; background: var(--accent); }

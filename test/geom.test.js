@@ -135,3 +135,41 @@ test('片勾配: IP に設定した値を使い、未設定なら必要片勾配
   near(set.vSafe, Math.sqrt(127 * 200 * (0.04 + Rules.T[60].f)), 1e-9);
   assert.ok(set.vSafe < auto.vSafe + 1e-9 || auto.e <= 0.04);
 });
+
+test('既存道路の途切れ修復: T 字の手前で止まった線を延ばし、相手線に接続点を挿入', () => {
+  const lines = [
+    [{ x: -50, y: 0 }, { x: 50, y: 0 }],     // 横の道路
+    [{ x: 0, y: 40 }, { x: 0, y: 4 }],       // 4m 手前で止まった縦の道路
+  ];
+  const ops = G.healGaps(lines, { tol: 8 });
+  assert.strictEqual(ops.filter((o) => !o.insert).length, 1);
+  const out = G.applyHeal(lines, ops);
+  const v = out[1], last = v[v.length - 1];
+  near(last.x, 0, 1e-9, 'x'); near(last.y, 0, 1e-9, 'y');
+  assert.strictEqual(out[0].length, 3, '横の道路に接続点が入る');
+  near(out[0][1].x, 0, 1e-9, '挿入位置');
+});
+
+test('既存道路の途切れ修復: 端点どうしの小さな隙間は 1 回だけつなぐ', () => {
+  const lines = [
+    [{ x: 0, y: 0 }, { x: 30, y: 0 }],
+    [{ x: 33, y: 0.5 }, { x: 60, y: 0 }],
+  ];
+  const ops = G.healGaps(lines, { tol: 8 });
+  assert.strictEqual(ops.length, 1);
+  const out = G.applyHeal(lines, ops);
+  const changed = out.findIndex((l, i) => l !== lines[i]);
+  assert.ok(changed >= 0);
+  assert.strictEqual(out[1 - changed], lines[1 - changed], '変更のない線は同じ配列');
+});
+
+test('既存道路の途切れ修復: つながっている線・遠い線・並走する線はそのまま', () => {
+  const lines = [
+    [{ x: -50, y: 0 }, { x: 50, y: 0 }],
+    [{ x: 0, y: 40 }, { x: 0, y: 0 }],        // 既に接続
+    [{ x: 100, y: 40 }, { x: 100, y: 20 }],   // 20m 離れている
+    [{ x: -50, y: 6 }, { x: -10, y: 6 }],     // 横の道路と 6m で並走（端点の先は何もない）
+  ];
+  const ops = G.healGaps(lines, { tol: 8 });
+  assert.deepStrictEqual(ops.filter((o) => !o.insert).map((o) => o.li + ':' + o.end), []);
+});

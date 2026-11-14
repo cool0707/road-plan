@@ -16,7 +16,7 @@ const LS_KEY = 'roadplan.project.v1';
 function newProject() {
   return {
     version: 1, name: '無題の道路計画', origin: null, roads: [], existing: [], image: null,
-    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, view: null, googleKey: '', traffic: null,
+    base: 'gsi-pale', baseOpacity: 1, existingVisible: true, existingWidth: false, healTol: 8, view: null, googleKey: '', traffic: null,
     defaults: { cls: '3-3', V: 40, lanes: 2, laneW: 3.0, shoulderW: 0.75, sidewalkW: 0, shitei: false },
   };
 }
@@ -25,7 +25,7 @@ function loadProject() {
   return null;
 }
 let project = loadProject() || newProject();
-const ui = { tool: 'select', sel: null, tab: 'design', draw: null, measure: [], pick: null, dragging: false, imageUrl: null, profiles: new Map(), snap: null, vdock: false, vdrag: null };
+const ui = { tool: 'select', sel: null, tab: 'design', draw: null, measure: [], pick: null, link: null, dragging: false, imageUrl: null, profiles: new Map(), snap: null, vdock: false, vdrag: null };
 
 function save() {
   const c = map.getCenter();
@@ -388,6 +388,25 @@ function deleteExistingPiece() {
   ui.sel = null;
   commitEx();
 }
+/* 途切れの修復: どこにもつながっていない端点を、tol m 以内の他の道路（端点・延長線との交点・前方の最近点）へ延ばす */
+const llArr = (xy) => { const ll = P.toLL(xy.x, xy.y); return [ll.lat, ll.lng]; };
+function healExisting(tol) {
+  if (!project.existing.length) return;
+  const xys = project.existing.map((e) => e.pts.map((p) => P.toXY(p)));
+  const ops = Geom.healGaps(xys, { tol });
+  const n = ops.filter((o) => !o.insert).length;
+  if (!n) return toast(`${fmt(tol, 0)}m 以内に途切れている既存道路はありません`);
+  const pts = Geom.applyHeal(project.existing.map((e) => e.pts), ops, llArr);
+  project.existing = project.existing.map((e, i) => (pts[i] === e.pts ? e : Object.assign({}, e, { pts: pts[i], bbox: bboxOf(pts[i]) })));
+  commitEx();
+  toast(`途切れていた既存道路 ${n} か所をつなぎました（Ctrl+Z で元に戻せます）`);
+}
+/* 既存道路 ex の線分 si の位置 w に頂点を挿入した新しい要素（頂点上なら挿入しない） */
+function exInsert(ex, si, w, ll) {
+  if (w <= 1e-6 || w >= 1 - 1e-6) return ex;
+  const pts = ex.pts.slice(); pts.splice(si + 1, 0, ll);
+  return Object.assign({}, ex, { pts, bbox: bboxOf(pts) });
+}
 const dupMsg = (r) => (r.skipped ? `（重複 ${r.skipped} 本は除外）` : '');
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 async function fetchOSM() {
@@ -551,11 +570,13 @@ function existingInfo(ex, at) {
 }
 
 /* ───────── スナップ ───────── */
-function snapAt(cp, excludeId) {
-  const tol = 12, ll = map.containerPointToLatLng(cp), pad = map.containerPointToLatLng(L.point(cp.x + tol, cp.y - tol));
+/* 画面上の点 cp に最も近い既存道路上の点（tol px 以内）。端点には優先して吸着する */
+function exSnapAt(cp, excludeId, tol = 12) {
+  const ll = map.containerPointToLatLng(cp), pad = map.containerPointToLatLng(L.point(cp.x + tol, cp.y - tol));
   const dLat = Math.abs(pad.lat - ll.lat), dLng = Math.abs(pad.lng - ll.lng);
   let best = null;
   if (project.existingVisible) for (const ex of project.existing) {
+    if (ex.id === excludeId) continue;
     const b = ex.bbox;
     if (ll.lat < b[0] - dLat || ll.lat > b[2] + dLat || ll.lng < b[1] - dLng || ll.lng > b[3] + dLng) continue;
     let prev = map.latLngToContainerPoint(ex.pts[0]);
@@ -566,18 +587,28 @@ function snapAt(cp, excludeId) {
       if (i === 1 && Math.hypot(cp.x - prev.x, cp.y - prev.y) < tol) t = 0;
       if (i === ex.pts.length - 1 && Math.hypot(cp.x - cur.x, cp.y - cur.y) < tol) t = 1;
       const px = prev.x + vx * t, py = prev.y + vy * t, d = Math.hypot(cp.x - px, cp.y - py);
-      if (d < tol && (!best || d < best.d)) best = { d, ex, i, pt: L.point(px, py), isEnd: (i === 1 && t === 0) || (i === ex.pts.length - 1 && t === 1) };
+      const end = i === 1 && t === 0 ? 0 : i === ex.pts.length - 1 && t === 1 ? 1 : null;
+      if (d < tol && (!best || d < best.d || (end != null && best.end == null && d < best.d + 4))) best = { d, ex, i, t, pt: L.point(px, py), isEnd: end != null, end };
       prev = cur;
     }
   }
+  if (!best) return null;
+  // 線分上の点を線分の座標から補間（頂点上は頂点の座標そのもの。丸め誤差で接続が切れないように）
+  const a = best.ex.pts[best.i - 1], b = best.ex.pts[best.i], at = L.latLng(a[0] + (b[0] - a[0]) * best.t, a[1] + (b[1] - a[1]) * best.t);
+  return Object.assign(best, { latlng: at, si: best.i - 1 });
+}
+function snapAt(cp, excludeId) {
+  const tol = 12, ll = map.containerPointToLatLng(cp), pad = map.containerPointToLatLng(L.point(cp.x + tol, cp.y - tol));
+  let best = exSnapAt(cp, null, tol);
   if (best) {
     const ex = best.ex, a = P.toXY(ex.pts[best.i - 1]), b = P.toXY(ex.pts[best.i]);
     return {
-      latlng: map.containerPointToLatLng(best.pt),
+      latlng: best.latlng,
       ref: { refType: 'existing', refId: ex.id, name: ex.name || ex.clsJa, bearing: Math.atan2(b.y - a.y, b.x - a.x), width: ex.width, speed: ex.speed, speedEst: ex.speedEst, isEnd: best.isEnd },
       label: `${ex.name || ex.clsJa}${best.isEnd ? ' 端点' : ''}・幅員 約${fmt(ex.width, 1)}m`,
     };
   }
+  best = null;
   const q = P.toXY(ll), tolM = P.toXY(pad).x - q.x;
   for (const road of project.roads) {
     if (road.id === excludeId || road.visible === false) continue;
@@ -665,6 +696,7 @@ function renderMap() {
   }
   if (ui.draw) drawPreview();
   if (ui.measure.length) drawMeasure();
+  if (ui.link) drawLinkPreview();
   if (ui.sel && ui.sel.type === 'existing' && ui.sel.at) L.circleMarker(ui.sel.at, { radius: 5, color: '#0d99ff', weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false }).addTo(gMisc);
   if (!ui.dragging) renderHandles();
   $('#zoomLabel').textContent = 'z ' + map.getZoom().toFixed(1);
@@ -715,6 +747,7 @@ function renderHandles() {
       m.addTo(gHandles);
     }
   }
+  if (ui.sel && ui.sel.type === 'existing' && ui.tool === 'select') renderExEnds();
   if (ui.sel && ui.sel.type === 'image' && project.image && project.image.visible) {
     const im = project.image, cs = imageCorners();
     const outline = L.polygon(cs, { color: '#7b61ff', weight: 1.5, dashArray: '6 4', fill: false, interactive: false }).addTo(gHandles);
@@ -738,11 +771,14 @@ const HINTS = {
   draw: 'クリックで IP を追加 ・ 既存道路の近くで吸着して接続 ・ <kbd>ダブルクリック</kbd>/<kbd>Enter</kbd> で確定 ・ <kbd>Backspace</kbd> で1点戻す ・ <kbd>Alt</kbd> で吸着オフ ・ <kbd>Esc</kbd> で中止',
   measure: '2点をクリックして距離と方位角を計測 ・ <kbd>Esc</kbd> で終了',
   pick: '下絵上で実距離が分かる 2 点をクリックしてください ・ <kbd>Esc</kbd> で中止',
+  exlink: '途切れた道路の端点（または道路上）をクリック → 経由点 → つなぐ先の道路をクリックで確定 ・ <kbd>Enter</kbd> で行き止まりのまま確定 ・ <kbd>Alt</kbd> で吸着オフ ・ <kbd>Esc</kbd> で終了',
   tobs: '交通量を観測した地点の道路をクリックしてください（下の表に方向別の台数を入力します） ・ <kbd>Esc</kbd> で終了',
 };
 function setTool(t) {
   if (ui.tool === 'draw' && t !== 'draw') ui.draw = null;
   ui.tool = t; ui.measure = []; if (t !== 'pick') ui.pick = null;
+  ui.link = t === 'exlink' ? { pts: [], start: null, cursor: null } : null;
+  if (t === 'exlink' && !project.existingVisible) { project.existingVisible = true; save(); }
   showSnap(null);
   if (t === 'draw') {
     if (!project.origin || (!project.roads.length && !project.image)) { const c = map.getCenter(); project.origin = { lat: c.lat, lng: c.lng }; alCache.clear(); }
@@ -791,6 +827,89 @@ function finishDraw() {
   toast(`${road.name} を作成（${road.lanes}車線・全幅 ${fmt(Rules.totalWidth(road), 2)}m）。幅員・車線数は右パネルの一番上で変更できます`);
 }
 
+/* ───────── ツール: 既存道路をつなぐ・描き足す ───────── */
+const exSnapLabel = (sn) => `${sn.ex.name || sn.ex.clsJa}${sn.isEnd ? ' 端点' : ''}`;
+function drawLinkPreview() {
+  const k = ui.link, pts = k.pts.slice();
+  if (k.cursor && pts.length) pts.push(k.cursor);
+  if (pts.length >= 2) L.polyline(pts, { pane: 'design', color: EX_C.sel, weight: 3, dashArray: '6 5', interactive: false }).addTo(gPreview);
+  k.pts.forEach((p) => L.circleMarker(p, { pane: 'design', radius: 4, color: EX_C.sel, weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false }).addTo(gPreview));
+}
+/* 既存道路 ex の、点 ll に最も近い線分上に頂点を入れる（T 字の接続点。頂点の近く 0.3m 以内なら入れない） */
+function exInsertNear(ex, ll) {
+  const xy = ex.pts.map((p) => P.toXY(p)), q = P.toXY(ll), u = Geom.polyNearest(xy, q);
+  const si = Math.min(Math.floor(u), xy.length - 2), w = u - si, segL = Math.hypot(xy[si + 1].x - xy[si].x, xy[si + 1].y - xy[si].y);
+  if (w * segL < 0.3 || (1 - w) * segL < 0.3) return ex;
+  return exInsert(ex, si, w, ll);
+}
+function finishLink(endSnap) {
+  const k = ui.link;
+  if (!k || k.pts.length < 2) { if (k) Object.assign(k, { pts: [], start: null, cursor: null }); return renderMap(); }
+  const path = k.pts.map((p) => [p[0], p[1]]), start = k.start;
+  const upd = new Map(), get = (id) => upd.get(id) || project.existing.find((e) => e.id === id);
+  // 道路の途中につないだ所には頂点を入れておく（交差点として区切れるように）
+  for (const sn of [start, endSnap]) if (sn && !sn.isEnd) { const e = get(sn.ex.id); if (e) upd.set(e.id, exInsertNear(e, sn.latlng)); }
+  let result, msg;
+  if (start && start.isEnd) { // 端点から延ばす
+    const e = get(start.ex.id), pts = start.end ? e.pts.concat(path.slice(1)) : path.slice(1).reverse().concat(e.pts);
+    result = Object.assign({}, e, { pts, bbox: bboxOf(pts) }); msg = `「${e.name || e.clsJa}」を延ばしてつなぎました`;
+  } else if (endSnap && endSnap.isEnd) {
+    const e = get(endSnap.ex.id), rev = path.slice(0, -1);
+    const pts = endSnap.end ? e.pts.concat(rev.reverse()) : rev.concat(e.pts);
+    result = Object.assign({}, e, { pts, bbox: bboxOf(pts) }); msg = `「${e.name || e.clsJa}」を延ばしてつなぎました`;
+  } else {
+    const src = (start && start.ex) || (endSnap && endSnap.ex);
+    const base = src ? Object.assign({}, src) : { name: '', cls: 'residential', clsJa: CLS_JA.residential, width: CLS_WIDTH.residential, lanes: null, speed: CLS_SPEED.residential, speedEst: true, oneway: false, surface: '' };
+    result = Object.assign(base, { id: 'man-' + uid(), src: '手動', widthNote: src ? `つないだ道路（${src.src}）から` : '道路種別から推定', pts: path, bbox: bboxOf(path) });
+    msg = '既存道路を描き足しました';
+  }
+  upd.set(result.id, result);
+  const known = new Set(project.existing.map((e) => e.id));
+  project.existing = project.existing.map((e) => upd.get(e.id) || e).concat(known.has(result.id) ? [] : [result]);
+  Object.assign(k, { pts: [], start: null, cursor: null });
+  showSnap(null); commitEx();
+  toast(msg + '（続けてつなげます。Esc で終了）');
+}
+function linkClick(e) {
+  const k = ui.link, sn = e.originalEvent.altKey ? null : exSnapAt(e.containerPoint);
+  const ll = sn ? sn.latlng : e.latlng, p = [ll.lat, ll.lng], last = k.pts[k.pts.length - 1];
+  if (last && map.latLngToContainerPoint(last).distanceTo(map.latLngToContainerPoint(ll)) < 5) return;
+  k.pts.push(p);
+  if (k.pts.length === 1) k.start = sn;
+  else if (sn) { k.cursor = null; return finishLink(sn); }
+  renderMap();
+}
+/* 選択中の既存道路の端点ハンドル: ドラッグして他の道路に吸着させる */
+function renderExEnds() {
+  const ex = project.existing.find((e) => e.id === ui.sel.id);
+  if (!ex || !project.existingVisible) return;
+  const n = ex.pts.length;
+  [0, 1].forEach((end) => {
+    const idx = end ? n - 1 : 0, nb = ex.pts[end ? n - 2 : 1];
+    const m = L.marker(ex.pts[idx], { draggable: true, icon: L.divIcon({ className: 'ip-h end ex-end', iconSize: [12, 12] }), zIndexOffset: 1000, bubblingMouseEvents: false, title: (end ? '終点' : '始点') + '（ドラッグして他の道路につなぐ）' });
+    const ghost = L.polyline([nb, ex.pts[idx]], { pane: 'design', color: EX_C.sel, weight: 3, dashArray: '6 5', interactive: false });
+    m.on('dragstart', () => { ui.dragging = true; ghost.addTo(gHandles); });
+    m.on('drag', (ev) => {
+      let ll = m.getLatLng(), sn = null;
+      if (!(ev.originalEvent && ev.originalEvent.altKey)) { sn = exSnapAt(map.latLngToContainerPoint(ll), ex.id); if (sn) { ll = sn.latlng; m.setLatLng(ll); } }
+      m._snap = sn; ghost.setLatLngs([nb, ll]);
+      showSnap(sn && { latlng: sn.latlng, label: exSnapLabel(sn) });
+    });
+    m.on('dragend', () => {
+      ui.dragging = false; showSnap(null);
+      const ll = m.getLatLng(), sn = m._snap, pts = ex.pts.slice();
+      pts[idx] = [ll.lat, ll.lng];
+      const moved = Object.assign({}, ex, { pts, bbox: bboxOf(pts) }), upd = new Map([[ex.id, moved]]);
+      if (sn && !sn.isEnd) upd.set(sn.ex.id, exInsertNear(sn.ex, sn.latlng));
+      project.existing = project.existing.map((e) => upd.get(e.id) || e);
+      const at = ui.sel.at || pts[idx];
+      ui.sel = Object.assign({ type: 'existing', id: ex.id, at }, existingPiece(moved, at));
+      commitEx();
+    });
+    m.addTo(gHandles);
+  });
+}
+
 /* 計測 */
 function drawMeasure() {
   const pts = ui.measure.map((p) => P.toLL(p.x, p.y));
@@ -813,6 +932,8 @@ map.on('click', (e) => {
     if (snap && d.ips.length === 1) d.startRef = snap.ref;
     else if (snap) { d.endRef = snap.ref; d.cursor = null; return finishDraw(); }
     renderMap();
+  } else if (ui.tool === 'exlink') {
+    linkClick(e);
   } else if (ui.tool === 'measure') {
     if (ui.measure.length >= 2) ui.measure = [];
     ui.measure.push(P.toXY(e.latlng)); renderMap();
@@ -821,7 +942,7 @@ map.on('click', (e) => {
     if (ui.pick.length === 2) finishScalePick();
   } else if (ui.sel) select(null);
 });
-map.on('dblclick', () => { if (ui.tool === 'draw') { ui.draw.cursor = null; finishDraw(); } });
+map.on('dblclick', () => { if (ui.tool === 'draw') { ui.draw.cursor = null; finishDraw(); } else if (ui.tool === 'exlink') { ui.link.cursor = null; finishLink(null); } });
 let moveRaf = 0;
 map.on('mousemove', (e) => {
   if (moveRaf) return;
@@ -843,6 +964,13 @@ map.on('mousemove', (e) => {
       showSnap(snap);
       ui.draw.cursor = ui.draw.ips.length ? P.toXY(snap ? snap.latlng : e.latlng) : null;
       gPreview.clearLayers(); drawPreview();
+    }
+    if (ui.tool === 'exlink' && ui.link) {
+      const sn = e.originalEvent.altKey ? null : exSnapAt(e.containerPoint);
+      showSnap(sn && { latlng: sn.latlng, label: exSnapLabel(sn) });
+      const ll = sn ? sn.latlng : e.latlng;
+      ui.link.cursor = [ll.lat, ll.lng];
+      gPreview.clearLayers(); drawLinkPreview();
     }
   });
 });

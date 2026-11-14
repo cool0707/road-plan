@@ -101,10 +101,9 @@ const TrafficUI = (() => {
     group.on('mousemove', (e) => { if (e.layer._ei != null) tip.setLatLng(e.latlng); });
     group.on('mouseout', () => map.closeTooltip(tip));
     group.on('click', (e) => {
-      const i = e.layer._ei; if (i == null) return;
+      const i = e.layer._ei; if (i == null || (ui.tool !== 'tobs' && ui.tool !== 'select')) return; // 作図・計測などのツール中は地図のクリックとして扱う
       L.DomEvent.stopPropagation(e);
       if (ui.tool === 'tobs') return addObsAt(e.latlng, i);
-      if (ui.tool !== 'select') return;
       st.sel = st.net.edges[i].key; st.at = e.latlng; render(); renderPanels();
     });
   }

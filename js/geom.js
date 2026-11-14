@@ -258,6 +258,100 @@
     return out;
   }
 
+  /* ───────── 既存道路の途切れ修復 ─────────
+   * lines: 点列 [{x,y}] の配列。どの線ともつながっていない端点（eps 以内に他の線がない）を、
+   * tol 以内にある他の線（自線の離れた部分を含む）へ延ばしてつなぐ。
+   * 候補: ①他線の端点 ②進行方向の延長線と他線の交点 ③進行方向 ±60° 以内の最近点。
+   * 端点どうしは優先（同程度の距離なら端点につなぐ）。返り値は操作の配列:
+   *   { li, end: 0|1, pt, dist, kind }  … 線 li の始点(0)/終点(1)の先に pt を足す
+   *   { li, si, w, pt, insert: true }   … 線 li の線分 si の w の位置に頂点を挿入（T 字の接続点） */
+  function healGaps(lines, opt) {
+    const o = Object.assign({ tol: 8, eps: 0.5, prefer: 2 }, opt), tol = o.tol, cell = Math.max(10, tol * 2);
+    const grid = new Map(), key = (i, j) => i + ',' + j;
+    const cum = lines.map((xy) => { const c = [0]; for (let k = 1; k < xy.length; k++) c.push(c[k - 1] + Math.hypot(xy[k].x - xy[k - 1].x, xy[k].y - xy[k - 1].y)); return c; });
+    lines.forEach((xy, li) => {
+      for (let si = 0; si < xy.length - 1; si++) {
+        const a = xy[si], b = xy[si + 1];
+        const i0 = Math.floor((Math.min(a.x, b.x) - tol) / cell), i1 = Math.floor((Math.max(a.x, b.x) + tol) / cell);
+        const j0 = Math.floor((Math.min(a.y, b.y) - tol) / cell), j1 = Math.floor((Math.max(a.y, b.y) + tol) / cell);
+        for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) { const k = key(i, j); if (!grid.has(k)) grid.set(k, []); grid.get(k).push([li, si]); }
+      }
+    });
+    const cands = [];
+    lines.forEach((xy, li) => {
+      const n = xy.length, total = cum[li][n - 1];
+      if (n < 2 || total < 0.1) return;
+      for (const end of [0, 1]) {
+        const p = end ? xy[n - 1] : xy[0];
+        // 進行方向: 端から 3m ほど手前の点 → 端点
+        let k = end ? n - 2 : 1;
+        while (k > 0 && k < n - 1 && Math.hypot(xy[k].x - p.x, xy[k].y - p.y) < 3) k += end ? -1 : 1;
+        const q = xy[k], dl = Math.hypot(p.x - q.x, p.y - q.y);
+        if (!dl) continue;
+        const dx = (p.x - q.x) / dl, dy = (p.y - q.y) / dl;
+        const segs = grid.get(key(Math.floor(p.x / cell), Math.floor(p.y / cell))) || [];
+        const skipSelf = 2 * tol + 5; // 自線の端点付近（道なりの距離）は対象外
+        let connected = false, best = null;
+        const score = (c) => c.dist - (c.kind === 'end' ? o.prefer : 0), offer = (c) => { if (!best || score(c) < score(best)) best = c; };
+        for (const [lj, sj] of segs) {
+          const ys = lines[lj], a = ys[sj], b = ys[sj + 1];
+          if (lj === li) {
+            const s0 = cum[li][sj], s1 = cum[li][sj + 1], along = end ? total - s1 : s0;
+            if (along < skipSelf) continue;
+          }
+          const vx = b.x - a.x, vy = b.y - a.y, l2 = vx * vx + vy * vy;
+          if (!l2) continue;
+          const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / l2));
+          const cx = a.x + vx * t, cy = a.y + vy * t, dn = Math.hypot(cx - p.x, cy - p.y);
+          if (dn <= o.eps) { connected = true; break; }
+          if (dn > tol) continue;
+          const lastSeg = ys.length - 2;
+          // ① 他線の端点
+          for (const [isEnd, pt, oe] of [[sj === 0, a, 0], [sj === lastSeg, b, 1]]) {
+            if (!isEnd) continue;
+            const ex = pt.x - p.x, ey = pt.y - p.y, de = Math.hypot(ex, ey);
+            if (de <= tol && (ex * dx + ey * dy >= 0.5 * de || de < 2)) offer({ li, end, pt: { x: pt.x, y: pt.y }, dist: de, kind: 'end', to: { li: lj, end: oe } });
+          }
+          // ② 延長線との交点
+          const den = dx * vy - dy * vx;
+          if (Math.abs(den) > 1e-9) {
+            const s = ((a.x - p.x) * vy - (a.y - p.y) * vx) / den, w = ((a.x - p.x) * dy - (a.y - p.y) * dx) / den;
+            if (s > 0 && s <= tol && w >= 0 && w <= 1) offer({ li, end, pt: { x: p.x + dx * s, y: p.y + dy * s }, dist: s, kind: 'ray', to: { li: lj, si: sj, w } });
+          }
+          // ③ 前方の最近点
+          if ((cx - p.x) * dx + (cy - p.y) * dy >= 0.5 * dn) offer({ li, end, pt: { x: cx, y: cy }, dist: dn, kind: 'near', to: { li: lj, si: sj, w: t } });
+        }
+        if (!connected && best) cands.push(best);
+      }
+    });
+    // 近いものから順に適用（端点どうしをつないだら相手の端点も済みにする）
+    cands.sort((a, b) => a.dist - b.dist);
+    const done = new Set(), ops = [];
+    for (const c of cands) {
+      const id = c.li + ':' + c.end;
+      if (done.has(id)) continue;
+      done.add(id);
+      if (c.kind === 'end') done.add(c.to.li + ':' + c.to.end);
+      ops.push({ li: c.li, end: c.end, pt: c.pt, dist: c.dist, kind: c.kind });
+      if (c.kind !== 'end' && c.to.w > 1e-6 && c.to.w < 1 - 1e-6) ops.push({ li: c.to.li, si: c.to.si, w: c.to.w, pt: c.pt, insert: true });
+    }
+    return ops;
+  }
+  /* healGaps の操作を点列に適用する。toPt(xy) で点の表現に変換（省略時は xy のまま）。変更のない線は同じ配列を返す */
+  function applyHeal(lines, ops, toPt) {
+    const cv = toPt || ((q) => ({ x: q.x, y: q.y }));
+    const by = new Map();
+    for (const op of ops) { if (!by.has(op.li)) by.set(op.li, []); by.get(op.li).push(op); }
+    return lines.map((pts, li) => {
+      const list = by.get(li);
+      if (!list) return pts;
+      const out = pts.slice();
+      list.filter((op) => op.insert).sort((a, b) => b.si + b.w - (a.si + a.w)).forEach((op) => out.splice(op.si + 1, 0, cv(op.pt)));
+      list.forEach((op) => { if (op.insert) return; if (op.end) out.push(cv(op.pt)); else out.unshift(cv(op.pt)); });
+      return out;
+    });
+  }
+
   /* ───────── 縦断線形（VIP 法：勾配直線 + 2次放物線の縦断曲線） ─────────
    * vips: [{ s: 追加距離 m, z: 計画高 m, VCL: 縦断曲線長 m }]（先頭=BP・末尾=EP、s は length に合わせる）
    * 勾配 g は小数（0.05 = 5%）。縦断曲線は VIP を中心とする対称放物線。 */
@@ -315,7 +409,7 @@
     return pts[pts.length - 1].h;
   }
 
-  const G = { wrap, evalSeg, spiral, curveAt, computeAlignment, sampleElement, sample, poseAt, project, polyLen, polyLenTo, polyBreaks, polyNearest, pieceAt, polySlice, computeProfile, profileAt, maxGradeIn, interpProfile };
+  const G = { wrap, evalSeg, spiral, curveAt, computeAlignment, sampleElement, sample, poseAt, project, polyLen, polyLenTo, polyBreaks, polyNearest, pieceAt, polySlice, healGaps, applyHeal, computeProfile, profileAt, maxGradeIn, interpProfile };
   if (typeof module !== 'undefined' && module.exports) module.exports = G;
   else root.Geom = G;
 })(typeof self !== 'undefined' ? self : this);
