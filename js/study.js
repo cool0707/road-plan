@@ -288,12 +288,12 @@
     const widthOf = (e) => e.width || (e.lanesEff >= 2 ? 6 : 4);
     const dirAt = (e, n) => { const p = e.pts, a = e.a === n ? p[0] : p[p.length - 1], b = e.a === n ? p[1] : p[p.length - 2], l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[0] - a[0]) / l, (b[1] - a[1]) / l]; };
     /* 主要交差点（交差道路の幅員 5.5m 以上）: その節点に、直進方向の続きではない幅員 5.5m 以上の道路がつながっている */
-    const major = (e, n, withPlan) => { const d = dirAt(e, n); return inc[n].some((f) => { if (f === e || (f.planned && !withPlan) || widthOf(f) < 5.5) return false; const q = dirAt(f, n); return d[0] * q[0] + d[1] * q[1] > -0.87; }); };
+    const major = (e, n, withPlan) => { const d = dirAt(e, n); return inc[n].some((f) => { if (f === e || (f.planned && !withPlan) || (f.abolish && withPlan) || widthOf(f) < 5.5) return false; const q = dirAt(f, n); return d[0] * q[0] + d[1] * q[1] > -0.87; }); };
     const tally = (c, withPlan) => {
       let time = 0, run = 0, acc = 0;
       const zOf = E.map((e) => (major(e, e.a, withPlan) ? 0.5 : 0) + (e.b !== e.a && major(e, e.b, withPlan) ? 0.5 : 0)); // 交差点は両側のリンクで半分ずつ数える（整備なしでは計画道路との交差点は無い）
       E.forEach((e, i) => {
-        if (e.planned && !withPlan) return;
+        if ((e.planned && !withPlan) || (e.abolish && withPlan)) return;
         const lg = opt.large >= 0 ? +opt.large : Math.max(0, Math.min(0.6, ((e.fac && e.fac.lg) || 10) / 100)), sh = { pc: (1 - lg) * (1 - small), small: (1 - lg) * small, large: lg };
         const type = e.kind === 'mw' ? 'exp' : e.area <= 3 ? 'urban' : e.area === 4 ? 'flat' : 'mount', km = e.len / 1000;
         let q = 0;
