@@ -33,7 +33,7 @@ const V3D = (() => {
 
   /* ───────── 読み込み・開閉 ───────── */
   function loadThree() {
-    if (!st.ready) st.ready = loadScript('vendor/three/three.min.js').then(() => Promise.all([loadScript('js/v3d-fx.js'), loadScript('js/v3d-city.js')]))
+    if (!st.ready) st.ready = loadScript('vendor/three/three.min.js').then(() => Promise.all([loadScript('js/v3d-fx.js'), loadScript('js/v3d-city.js'), loadScript('js/v3d-junction.js')]))
       .then(() => { T = window.THREE; FX = V3DFX; }).catch((e) => { st.ready = null; throw e; });
     return st.ready;
   }
@@ -411,11 +411,12 @@ const V3D = (() => {
       for (const p of xy) { if (inBox(p)) { if (!cur) parts.push((cur = [])); cur.push(p); } else cur = null; }
       const W = Math.max(2.5, e.width || 5) / 2, V = e.speed || 40, f = Rules.T[Rules.SPEEDS.reduce((a, b) => (Math.abs(b - V) < Math.abs(a - V) ? b : a))].f;
       for (const part of parts) {
-        const pts = [];
+        const pts = [], vk = []; // vk: 元の頂点の測点番号（交差点の検出に使う）
         for (let k = 0; k < part.length; k++) {
-          if (k === 0) { pts.push(part[0]); continue; }
+          if (k === 0) { pts.push(part[0]); vk.push(0); continue; }
           const a = part[k - 1], b = part[k], l = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(1, Math.ceil(l / 3));
-          for (let m = 1; m <= n; m++) pts.push({ x: a.x + ((b.x - a.x) * m) / n, y: a.y + ((b.y - a.y) * m) / n });
+          for (let m = 1; m < n; m++) pts.push({ x: a.x + ((b.x - a.x) * m) / n, y: a.y + ((b.y - a.y) * m) / n });
+          pts.push(b); vk.push(pts.length - 1);
         }
         const n = pts.length; if (n < 2) continue;
         const s = [0]; for (let k = 1; k < n; k++) s.push(s[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y));
@@ -429,7 +430,7 @@ const V3D = (() => {
           const inner = -Math.max(0.02, e2), outer = -0.02 + (e2 + 0.02) * t;
           return { s: s[k], x: p.x, y: p.y, c: Math.cos(th[k]), sn: Math.sin(th[k]), k: kk, z: avg(g, k, 20) ?? 0, slope: kk > 0 ? [inner, outer] : [outer, inner], bridge: false };
         });
-        out.push({ rows, W, sw: 0, E: W, cw: 0, L: s[n - 1], existing: true });
+        out.push({ rows, W, sw: 0, E: W, cw: 0, L: s[n - 1], existing: true, vk });
       }
     }
     return out;
@@ -454,7 +455,7 @@ const V3D = (() => {
   }
 
   /* ───────── 地形メッシュ（切土・盛土で整形） ───────── */
-  function buildTerrain(ex, hGround, roadsX, texInfo, exX = []) {
+  function buildTerrain(ex, hGround, roadsX, texInfo, exX = [], pads = []) {
     const sp = Math.max(1.2, ex.D / 260), nx = Math.ceil(ex.w / sp) + 1, ny = Math.ceil(ex.h / sp) + 1;
     const N = nx * ny, H = new Float32Array(N), H0 = new Float32Array(N), earth = new Float32Array(N * 4);
     const gx = (i) => ex.x0 + (ex.w * i) / (nx - 1), gy = (j) => ex.y1 - (ex.h * j) / (ny - 1); // j=0 が北端
@@ -486,7 +487,19 @@ const V3D = (() => {
         else { const c = h + (top + u / Rules.CUT_SLOPE - h) * w; if (c < h) { H[k] = c; earth[k * 4 + 1] = Math.max(earth[k * 4 + 1], Math.min(1, (h - c) / 0.6) * Math.min(1, w * 1.5)); } }
       }
     }
-    return { nx, ny, sp, H, H0, earth, gx, gy, mean, tex: texInfo, exX };
+    // 交差点: 舗装面の下を路面のすぐ下にそろえ、外側 3m でなじませる
+    for (const J of pads) {
+      const [bx0, by0, bx1, by1] = V3DJunction.padBox(J), m = 3;
+      const i0 = Math.max(0, Math.floor((bx0 - m - ex.x0) / sp)), i1 = Math.min(nx - 1, Math.ceil((bx1 + m - ex.x0) / sp));
+      const j0 = Math.max(0, Math.floor((ex.y1 - by1 - m) / sp)), j1 = Math.min(ny - 1, Math.ceil((ex.y1 - by0 + m) / sp));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const x = gx(i), y = gy(j), k = j * nx + i, top = J.padZ(x, y) - 0.15;
+        if (V3DJunction.inPad(J, x, y)) { H[k] = top; earth[k * 4 + 3] = 0; continue; }
+        const d = V3DJunction.padDist(J, x, y);
+        if (d < m) H[k] = top + (H[k] - top) * sstep(d, 0, m);
+      }
+    }
+    return { nx, ny, sp, H, H0, earth, gx, gy, mean, tex: texInfo, exX, pads };
   }
   const SLOPE_MAX = 30, SLOPE_FADE = 15;
   /* 整形後の地形高（双一次補間） */
@@ -612,16 +625,25 @@ const V3D = (() => {
       yellow = mat(0xf2b81d, { roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }), walk = mat(0xb9b4aa, { roughness: 0.95, map: asphaltTex(true) }), curb = mat(0xa9a59c),
       metal = mat(0x8d939a, { roughness: 0.45, metalness: 0.4 }), lampM = mat(0xfff6e0, { emissive: 0xffe9b8, emissiveIntensity: 0.4 });
     const P3 = (R, r, d, dz = 0) => { const n = { x: -r.sn, y: r.c }; return toV(r.x + n.x * d, r.y + n.y * d, surfZ(R, r, d) + dz); };
+    const JX = V3DJunction, pads = G.pads || [];
+    // 交差点で区画線（marks）・歩道（walk[左 +1 / 右 −1]）を途切れさせる区間
+    const gapOf = new Map();
+    for (const J of pads) for (const q of J.plans) {
+      if (!gapOf.has(q.R)) gapOf.set(q.R, { marks: [], walk: { 1: [], '-1': [] } });
+      const o = gapOf.get(q.R); o.marks.push(...q.marks); o.walk[1].push(...q.walk[1]); o.walk[-1].push(...q.walk[-1]);
+    }
     for (const R of roadsX) {
-      const rows = R.rows;
+      const rows = R.rows, gaps = gapOf.get(R) || { marks: [], walk: { 1: [], '-1': [] } };
       // 舗装（車道＋路肩）と側面の厚み
       world.add(mesh(ribbonGeo(rows.map((r) => [P3(R, r, -R.W), P3(R, r, 0), P3(R, r, R.W)])), asphalt));
       for (const sgn of [-1, 1]) world.add(mesh(ribbonGeo(rows.map((r) => { const d = sgn * R.W, t = P3(R, r, d); return [[t[0], t[1] - 0.45, t[2]], t]; })), asphalt));
       // 歩道（縁石 15cm）
-      if (R.sw > 0) for (const sgn of [-1, 1]) {
-        world.add(mesh(ribbonGeo(rows.map((r) => (sgn > 0 ? [P3(R, r, R.W + 0.001), P3(R, r, R.E)] : [P3(R, r, -R.E), P3(R, r, -R.W - 0.001)]))), walk));
-        world.add(mesh(ribbonGeo(rows.map((r) => { const t = P3(R, r, sgn * R.W, 0.15); return [P3(R, r, sgn * R.W * 0.9999), t]; })), curb));
-        world.add(mesh(ribbonGeo(rows.map((r) => { const t = P3(R, r, sgn * R.E); return [[t[0], t[1] - 0.6, t[2]], t]; })), curb));
+      if (R.sw > 0) for (const sgn of [-1, 1]) for (const [a, b] of JX.minus(R.L, gaps.walk[sgn])) {
+        if (b - a < 0.3) continue;
+        const sg = JX.slice(rows, a, b);
+        world.add(mesh(ribbonGeo(sg.map((r) => (sgn > 0 ? [P3(R, r, R.W + 0.001), P3(R, r, R.E)] : [P3(R, r, -R.E), P3(R, r, -R.W - 0.001)]))), walk));
+        world.add(mesh(ribbonGeo(sg.map((r) => { const t = P3(R, r, sgn * R.W, 0.15); return [P3(R, r, sgn * R.W * 0.9999), t]; })), curb));
+        world.add(mesh(ribbonGeo(sg.map((r) => { const t = P3(R, r, sgn * R.E); return [[t[0], t[1] - 0.6, t[2]], t]; })), curb));
       }
       // 橋梁: 桁（厚さ 1.6m）・高欄・橋脚
       const concrete = mat(0xb9b6ae, { roughness: 0.9 });
@@ -647,20 +669,18 @@ const V3D = (() => {
       }
       // 区画線: 外側線（実線）・中央線（実線）・車線境界線（破線 5m/5m）
       const lines = [];
-      if (R.cw > 0) { lines.push({ d: -R.cw / 2 + 0.15, m: white }, { d: R.cw / 2 - 0.15, m: white }); }
+      if (R.cw > 0) { lines.push({ d: -R.cw / 2 + 0.15, m: white, side: -1 }, { d: R.cw / 2 - 0.15, m: white, side: 1 }); }
       const nL = R.road.lanes;
       for (let j = 1; j < nL; j++) {
         const d = -R.cw / 2 + j * R.road.laneW, center = nL % 2 === 0 && j === nL / 2;
         lines.push({ d, m: center ? (R.road.V >= 50 && nL >= 4 ? yellow : white) : white, dash: !center, w: center ? 0.15 : 0.12 });
       }
       for (const ln of lines) {
-        const w = (ln.w || 0.15) / 2, segs = [];
-        let cur = null;
-        for (const r of rows) {
-          const on = !ln.dash || r.s % 10 < 5;
-          if (on) { if (!cur) segs.push((cur = [])); cur.push(r); } else cur = null;
-        }
-        for (const sg of segs) if (sg.length >= 2) world.add(mesh(ribbonGeo(sg.map((r) => [P3(R, r, ln.d - w, 0.012), P3(R, r, ln.d + w, 0.012)])), ln.m, false));
+        const w = (ln.w || 0.15) / 2, on = [];
+        if (ln.side) on.push(...JX.minus(R.L, [...gaps.marks, ...gaps.walk[ln.side]])); // 外側線は脇道の所でも切る
+        else if (!ln.dash) on.push(...JX.minus(R.L, gaps.marks));
+        else for (let a = 0; a < R.L; a += 10) on.push(...JX.minus(Math.min(R.L, a + 5), gaps.marks, a));
+        for (const [a, b] of on) if (b - a > 0.2) world.add(mesh(ribbonGeo(JX.slice(rows, a, b).map((r) => [P3(R, r, ln.d - w, 0.012), P3(R, r, ln.d + w, 0.012)])), ln.m, false));
       }
       // 街路灯（左右交互に 30m 間隔）
       if (opts.lamps && R.L > 20) {
@@ -668,6 +688,7 @@ const V3D = (() => {
         const armG = new T.BoxGeometry(2.2, 0.09, 0.09), headG = new T.BoxGeometry(0.7, 0.14, 0.34);
         let side = 1;
         for (let s = 10; s < R.L - 5; s += 30, side = -side) {
+          if (JX.inGaps(s, gaps.marks, 3) || JX.inGaps(s, gaps.walk[side], 2)) continue; // 交差点の中・脇道の口には立てない
           const r = rows.reduce((a, b) => (Math.abs(b.s - s) < Math.abs(a.s - s) ? b : a));
           const d = side * (R.sw > 0 ? R.W + Math.min(0.6, R.sw / 2) : R.W + 0.5), p = P3(R, r, Math.max(-R.E, Math.min(R.E, d)));
           const gp = new T.Group(); gp.position.set(p[0], p[1], p[2]);
@@ -685,6 +706,41 @@ const V3D = (() => {
       for (const R of G.exX) {
         world.add(mesh(ribbonGeo(R.rows.map((r) => [P3(R, r, -R.W, 0.04), P3(R, r, 0, 0.04), P3(R, r, R.W, 0.04)])), exM, false));
         for (const sgn of [-1, 1]) world.add(mesh(ribbonGeo(R.rows.map((r) => { const t = P3(R, r, sgn * R.W, 0.04); return [[t[0], t[1] - 0.5, t[2]], t]; })), exM, false));
+      }
+    }
+    // 交差点: 舗装面（断片ごとに三角形に分割）・隅の歩道・横断歩道・停止線
+    if (pads.length) {
+      const padM = mat(0xffffff, { roughness: 0.9, map: asphaltTex(), polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+      const exPadM = padM.clone(); exPadM.color.setScalar(1.45); // 既存道路だけの交差点は既存道路と同じ色
+      for (const J of pads) {
+        const pos = [], idx = [];
+        for (const ring of J.pieces) {
+          const faces = T.ShapeUtils.triangulateShape(ring.map((p) => new T.Vector2(p.x, p.y)), []), o0 = pos.length / 3;
+          ring.forEach((p) => pos.push(...toV(p.x, p.y, p.z)));
+          for (const [a, b, c] of faces) { // 平面で反時計回り → three の座標で上向き
+            const o = (ring[b].x - ring[a].x) * (ring[c].y - ring[a].y) - (ring[b].y - ring[a].y) * (ring[c].x - ring[a].x);
+            if (o > 0) idx.push(o0 + a, o0 + b, o0 + c); else idx.push(o0 + a, o0 + c, o0 + b);
+          }
+        }
+        if (!idx.length) continue;
+        const uv = new Float32Array((pos.length / 3) * 2);
+        for (let i = 0; i < pos.length / 3; i++) { uv[i * 2] = pos[i * 3] / 6; uv[i * 2 + 1] = pos[i * 3 + 2] / 6; }
+        const g = new T.BufferGeometry();
+        g.setAttribute('position', new T.BufferAttribute(new Float32Array(pos), 3)); g.setAttribute('uv', new T.BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals();
+        world.add(mesh(g, J.plan ? padM : exPadM, false));
+        for (const wk of J.walks) {
+          const up = (p, h) => toV(p.x, p.y, p.z + h);
+          world.add(mesh(ribbonGeo(wk.curb.map((p, i) => [up(wk.back[i], 0.15), up(p, 0.15)])), walk));
+          world.add(mesh(ribbonGeo(wk.curb.map((p) => [up(p, 0.15), up(p, 0)])), curb));
+          world.add(mesh(ribbonGeo(wk.back.map((p) => [up(p, -0.45), up(p, 0.15)])), curb));
+        }
+        for (const ln of J.lines) {
+          const R = ln.R, [d0, d1] = ln.d, h = ln.dz + 0.012, sg = JX.slice(R.rows, ln.s0, ln.s1);
+          const strip = (a, b) => world.add(mesh(ribbonGeo(sg.map((r) => [P3(R, r, a, h), P3(R, r, b, h)])), white, false));
+          if (ln.kind !== 'zebra') { strip(d0, d1); continue; }
+          const bar = 0.45, gap = 0.45, n = Math.max(1, Math.floor((d1 - d0 + gap) / (bar + gap))), o = d0 + (d1 - d0 - (n * bar + (n - 1) * gap)) / 2;
+          for (let i = 0; i < n; i++) strip(o + i * (bar + gap), o + i * (bar + gap) + bar);
+        }
       }
     }
     return world;
@@ -1185,7 +1241,8 @@ const V3D = (() => {
         if (my !== st.building || !st.open) return;
         const hRoad = (ll) => { const h = hRaw(ll); return h === SEA ? 0 : h; };
         const roadsX = ex.roads.map((r) => roadStations(r, hRoad)).filter(Boolean);
-        const G = buildTerrain(ex, hRaw, roadsX, texInfo, existingStations(ex, hRoad));
+        const J = V3DJunction.build(roadsX, existingStations(ex, hRoad), surfZ); // 交差点（既存道路はその手前で切り、高さをすりつける）
+        const G = buildTerrain(ex, hRaw, roadsX, texInfo, J.exs, J.pads);
         let base = Infinity; for (const h of G.H) base = Math.min(base, h);
         const excl = treeExclusion(ex, G, roadsX), isWater = waterMask(ex, city && city.water);
         FX.U.uSeaY.value = -base * opts.exag;
