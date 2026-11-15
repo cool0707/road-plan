@@ -130,7 +130,7 @@ vec3 skyColor(vec3 rd, float withSun){
     quadMesh.material = material; return quadMesh;
   }
   const VS = 'varying vec2 vUv;\nvoid main(){ vUv = position.xy*.5 + .5; gl_Position = vec4(position.xy, 0., 1.); }';
-  const post = { ok: false, w: 0, h: 0, scene: null, ao: null, ao2: null, a: null, bloom: [], mats: null, samples: 4 };
+  const post = { ok: false, w: 0, h: 0, scene: null, ao: null, ao2: null, a: null, bloom: [], mats: null, samples: 4, up: { ldr: null, out: null, lite: null, key: '', liteKey: '' } };
   function supported(renderer) { const gl = renderer.getContext(); return !!(gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float')); }
   function initPost() {
     const shader = (fs, uniforms) => new T.ShaderMaterial({ uniforms, vertexShader: VS, fragmentShader: fs, depthTest: false, depthWrite: false });
@@ -229,7 +229,135 @@ void main(){
   c += (h12(gl_FragCoord.xy) - .5)/255.;
   gl_FragColor = vec4(c, 1.);
 }`, { tColor: { value: null }, tB1: { value: null }, tB2: { value: null }, tB3: { value: null }, tB4: { value: null }, uGrade: { value: new T.Vector4(1, 0.5, 1.08, 0.3) }, uPx: { value: new T.Vector2() } });
+    /* ───── 空間アップスケール（AMD FidelityFX Super Resolution 1.0 の EASU＋RCAS を GLSL に移植。MIT License, © Advanced Micro Devices） ─────
+     * 縮小解像度で描いた sRGB の画（tSrc）を、輪郭の向きに沿った異方性 Lanczos 近似で表示解像度に拡大する */
+    m.easu = shader(`
+uniform sampler2D tSrc; uniform vec2 uIn, uOut; varying vec2 vUv;
+vec3 tap(ivec2 p){ return texelFetch(tSrc, clamp(p, ivec2(0), ivec2(uIn) - 1), 0).rgb; }
+float lum(vec3 c){ return c.g + .5*(c.r + c.b); }
+void setW(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE){
+  float lenX = max(abs(lD - lC), abs(lC - lB)), dirX = lD - lB;
+  dir.x += dirX*w; lenX = clamp(abs(dirX)/max(lenX, 1e-5), 0., 1.); len += lenX*lenX*w;
+  float lenY = max(abs(lE - lC), abs(lC - lA)), dirY = lE - lA;
+  dir.y += dirY*w; lenY = clamp(abs(dirY)/max(lenY, 1e-5), 0., 1.); len += lenY*lenY*w;
+}
+void tapW(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len, float lob, float clp, vec3 c){
+  vec2 v = vec2(dot(off, dir), dot(off, vec2(-dir.y, dir.x)))*len;
+  float d2 = min(dot(v, v), clp), wB = .4*d2 - 1., wA = lob*d2 - 1.;
+  wB *= wB; wA *= wA; wB = 1.5625*wB - .5625;
+  float w = wB*wA; aC += c*w; aW += w;
+}
+void main(){
+  vec2 pp = gl_FragCoord.xy*(uIn/uOut) - .5, fp = floor(pp); pp -= fp;
+  ivec2 q = ivec2(fp);
+  //    b c
+  //  e f g h
+  //  i j k l
+  //    n o
+  vec3 bC = tap(q + ivec2(0, -1)), cC = tap(q + ivec2(1, -1));
+  vec3 eC = tap(q + ivec2(-1, 0)), fC = tap(q), gC = tap(q + ivec2(1, 0)), hC = tap(q + ivec2(2, 0));
+  vec3 iC = tap(q + ivec2(-1, 1)), jC = tap(q + ivec2(0, 1)), kC = tap(q + ivec2(1, 1)), lC = tap(q + ivec2(2, 1));
+  vec3 nC = tap(q + ivec2(0, 2)), oC = tap(q + ivec2(1, 2));
+  float bL = lum(bC), cL = lum(cC), eL = lum(eC), fL = lum(fC), gL = lum(gC), hL = lum(hC), iL = lum(iC), jL = lum(jC), kL = lum(kC), lL = lum(lC), nL = lum(nC), oL = lum(oC);
+  vec2 dir = vec2(0.); float len = 0.;
+  setW(dir, len, (1. - pp.x)*(1. - pp.y), bL, eL, fL, gL, jL);
+  setW(dir, len, pp.x*(1. - pp.y), cL, fL, gL, hL, kL);
+  setW(dir, len, (1. - pp.x)*pp.y, fL, iL, jL, kL, nL);
+  setW(dir, len, pp.x*pp.y, gL, jL, kL, lL, oL);
+  float dirR = dot(dir, dir);
+  if (dirR < 1./32768.) dir = vec2(1., 0.); else dir *= inversesqrt(dirR);
+  len *= .5; len *= len;
+  float stretch = dot(dir, dir)/max(abs(dir.x), abs(dir.y));
+  vec2 len2 = vec2(1. + (stretch - 1.)*len, 1. - .5*len);
+  float lob = .5 + (.25 - .04 - .5)*len, clp = 1./lob;
+  vec3 mn4 = min(min(fC, gC), min(jC, kC)), mx4 = max(max(fC, gC), max(jC, kC));
+  vec3 aC = vec3(0.); float aW = 0.;
+  tapW(aC, aW, vec2(0., -1.) - pp, dir, len2, lob, clp, bC);
+  tapW(aC, aW, vec2(1., -1.) - pp, dir, len2, lob, clp, cC);
+  tapW(aC, aW, vec2(-1., 1.) - pp, dir, len2, lob, clp, iC);
+  tapW(aC, aW, vec2(0., 1.) - pp, dir, len2, lob, clp, jC);
+  tapW(aC, aW, vec2(0., 0.) - pp, dir, len2, lob, clp, fC);
+  tapW(aC, aW, vec2(-1., 0.) - pp, dir, len2, lob, clp, eC);
+  tapW(aC, aW, vec2(1., 1.) - pp, dir, len2, lob, clp, kC);
+  tapW(aC, aW, vec2(2., 1.) - pp, dir, len2, lob, clp, lC);
+  tapW(aC, aW, vec2(2., 0.) - pp, dir, len2, lob, clp, hC);
+  tapW(aC, aW, vec2(1., 0.) - pp, dir, len2, lob, clp, gC);
+  tapW(aC, aW, vec2(1., 2.) - pp, dir, len2, lob, clp, oC);
+  tapW(aC, aW, vec2(0., 2.) - pp, dir, len2, lob, clp, nC);
+  gl_FragColor = vec4(min(mx4, max(mn4, aC/aW)), 1.);
+}`, { tSrc: { value: null }, uIn: { value: new T.Vector2() }, uOut: { value: new T.Vector2() } });
+    /* RCAS: 拡大した画の輪郭を、はみ出し（リンギング）を抑えつつ鮮明にする。uSharp = 2^(-絞り)、1 が最強 */
+    m.rcas = shader(`
+uniform sampler2D tSrc; uniform float uSharp; varying vec2 vUv;
+vec3 tap(ivec2 p){ return texelFetch(tSrc, clamp(p, ivec2(0), textureSize(tSrc, 0) - 1), 0).rgb; }
+float lum(vec3 c){ return c.g + .5*(c.r + c.b); }
+void main(){
+  ivec2 q = ivec2(gl_FragCoord.xy);
+  //    b
+  //  d e f
+  //    h
+  vec3 b = tap(q + ivec2(0, -1)), d = tap(q + ivec2(-1, 0)), e = tap(q), f = tap(q + ivec2(1, 0)), h = tap(q + ivec2(0, 1));
+  float bL = lum(b), dL = lum(d), eL = lum(e), fL = lum(f), hL = lum(h);
+  float nz = .25*(bL + dL + fL + hL) - eL;
+  float mxL = max(max(max(bL, dL), max(eL, fL)), hL), mnL = min(min(min(bL, dL), min(eL, fL)), hL);
+  nz = clamp(abs(nz)/(mxL - mnL + 1e-5), 0., 1.);
+  nz = 1. - .5*nz;
+  vec3 mn4 = min(min(b, d), min(f, h)), mx4 = max(max(b, d), max(f, h));
+  vec3 hitMin = min(mn4, e)/max(4.*mx4, vec3(1e-5)), hitMax = (1. - max(mx4, e))/min(4.*mn4 - 4., vec3(-1e-5));
+  vec3 lobeC = max(-hitMin, hitMax);
+  float lobe = max(-(.25 - 1./16.), min(max(max(lobeC.r, lobeC.g), lobeC.b), 0.))*uSharp*nz;
+  gl_FragColor = vec4(clamp((lobe*(b + d + f + h) + e)/(4.*lobe + 1.), 0., 1.), 1.);
+}`, { tSrc: { value: null }, uSharp: { value: Math.pow(2, -0.25) } });
+    /* 軽量画質の縮小描画用: 線形の画に露出・ACES・sRGB をかける（画面に直接描くときに three.js がする処理と同じ） */
+    m.lite = shader(`
+uniform sampler2D tColor; uniform float uExp; varying vec2 vUv;
+vec3 aces(vec3 x){
+  const mat3 A = mat3(.59719, .07600, .02840, .35458, .90834, .13383, .04823, .01566, .83777);
+  const mat3 B = mat3(1.60475, -.10208, -.00327, -.53108, 1.10813, -.07276, -.07367, -.00605, 1.07602);
+  x = A*x; x = (x*(x + .0245786) - .000090537)/(x*(.983729*x + .4329510) + .238081);
+  return clamp(B*x, 0., 1.);
+}
+void main(){
+  vec3 c = aces(texture2D(tColor, vUv).rgb*uExp/.6);
+  gl_FragColor = vec4(mix(c*12.92, 1.055*pow(max(c, vec3(1e-5)), vec3(1./2.4)) - .055, step(.0031308, c)), 1.);
+}`, { tColor: { value: null }, uExp: { value: 1 } });
     post.ok = true;
+  }
+  /* 拡大用のレンダーターゲット: ldr（縮小解像度の sRGB）, out（表示解像度の EASU 結果） */
+  function ensureUp(w, h, W, H) {
+    const U2 = post.up, key = [w, h, W, H].join();
+    if (U2.key === key) return;
+    for (const k of ['ldr', 'out']) if (U2[k]) U2[k].dispose();
+    const o = { depthBuffer: false, minFilter: T.NearestFilter, magFilter: T.NearestFilter, generateMipmaps: false };
+    U2.ldr = new T.WebGLRenderTarget(w, h, o); U2.out = new T.WebGLRenderTarget(W, H, o); U2.key = key;
+  }
+  /* ldr（w×h）を表示解像度 W×H に拡大して画面へ（EASU → RCAS） */
+  function upscale(renderer, w, h, W, H) {
+    const m = post.mats, U2 = post.up;
+    m.easu.uniforms.tSrc.value = U2.ldr.texture; m.easu.uniforms.uIn.value.set(w, h); m.easu.uniforms.uOut.value.set(W, H);
+    renderer.setRenderTarget(U2.out); renderer.render(quad(m.easu), quadCam);
+    m.rcas.uniforms.tSrc.value = U2.out.texture;
+    renderer.setRenderTarget(null); renderer.render(quad(m.rcas), quadCam);
+  }
+  const scaled = (renderer, s) => {
+    const size = renderer.getDrawingBufferSize(_m.v2 || (_m.v2 = new T.Vector2())), W = size.x, H = size.y;
+    const w = Math.max(1, Math.round(W * (s || 1))), h = Math.max(1, Math.round(H * (s || 1)));
+    return { W, H, w, h, up: w < W || h < H };
+  };
+  /* 軽量画質（ポスト処理なし）を縮小解像度で描いて拡大する */
+  function renderLite(renderer, scene, camera, fx) {
+    const { W, H, w, h, up } = scaled(renderer, fx.scale);
+    if (!up) { renderer.setRenderTarget(null); renderer.render(scene, camera); return; }
+    const U2 = post.up, samples = fx.samples || 0, key = [w, h, samples].join();
+    if (U2.liteKey !== key) {
+      if (U2.lite) U2.lite.dispose();
+      U2.lite = new T.WebGLRenderTarget(w, h, { type: T.HalfFloatType, samples, minFilter: T.LinearFilter, magFilter: T.LinearFilter }); U2.liteKey = key;
+    }
+    ensureUp(w, h, W, H);
+    renderer.setRenderTarget(U2.lite); renderer.render(scene, camera);
+    post.mats.lite.uniforms.tColor.value = U2.lite.texture; post.mats.lite.uniforms.uExp.value = renderer.toneMappingExposure;
+    renderer.setRenderTarget(U2.ldr); renderer.render(quad(post.mats.lite), quadCam);
+    upscale(renderer, w, h, W, H);
   }
   function resizePost(w, h, samples) {
     if (post.w === w && post.h === h && post.samples === samples && post.scene) return;
@@ -249,10 +377,11 @@ void main(){
     post.scene = post.ao = post.ao2 = post.a = null; post.bloom = []; post.w = post.h = 0;
   }
   const _m = { ivp: null, v2: null };
-  /* 1 フレーム描く。fx = { fog: 霞の濃さ[1/m], fogH, ao, cloudShadow, exposure, bloom, vignette } */
+  /* 1 フレーム描く。fx = { samples, scale: 描画解像度の倍率（1 未満なら縮小して描き FSR 相当で拡大）, fog: 霞の濃さ[1/m], fogH, ao, cloudShadow, exposure, bloom, vignette } */
   function render(renderer, scene, camera, fx) {
-    const size = renderer.getDrawingBufferSize(_m.v2 || (_m.v2 = new T.Vector2())), w = size.x, h = size.y, m = post.mats;
+    const { W, H, w, h, up } = scaled(renderer, fx.scale), m = post.mats; // up: 縮小解像度で描いて FSR 相当で拡大する
     resizePost(w, h, fx.samples == null ? 4 : fx.samples);
+    if (up) ensureUp(w, h, W, H);
     camera.updateMatrixWorld();
     const tm = renderer.toneMapping; renderer.toneMapping = T.NoToneMapping;
     renderer.setRenderTarget(post.scene); renderer.render(scene, camera);
@@ -277,7 +406,8 @@ void main(){
     const f = m.fin.uniforms;
     f.tColor.value = post.a.texture; post.bloom.forEach((rt, k) => { f['tB' + (k + 1)].value = rt.texture; });
     f.uGrade.value.set(fx.exposure, fx.bloom, fx.saturation, fx.vignette);
-    draw(m.fin, null);
+    draw(m.fin, up ? post.up.ldr : null);
+    if (up) upscale(renderer, w, h, W, H);
     renderer.toneMapping = tm;
   }
 
@@ -394,6 +524,8 @@ else if (vB.w < .5) diffuseColor.rgb *= .86 + .14*smoothstep(0., 6., vB.z);`);
   }
   function dispose() {
     disposePost();
+    for (const k of ['ldr', 'out', 'lite']) if (post.up[k]) { post.up[k].dispose(); post.up[k] = null; }
+    post.up.key = post.up.liteKey = '';
     for (const k in post.mats || {}) post.mats[k].dispose();
     post.mats = null; post.ok = false;
     if (sky.env) sky.env.dispose(); if (sky.bakeRT) sky.bakeRT.dispose(); if (sky.pmrem) sky.pmrem.dispose(); if (sky.bakeMat) sky.bakeMat.dispose();
@@ -403,5 +535,5 @@ else if (vB.w < .5) diffuseColor.rgb *= .86 + .14*smoothstep(0., 6., vB.z);`);
     if (U.blank) U.blank.dispose();
   }
 
-  return { U, E_SUN, init, dispose, render, bakeEnv, sunColor, patchTerrain, patchFoliage, patchBuilding, get postOk() { return post.ok; } };
+  return { U, E_SUN, init, dispose, render, renderLite, bakeEnv, sunColor, patchTerrain, patchFoliage, patchBuilding, get postOk() { return post.ok; } };
 })();

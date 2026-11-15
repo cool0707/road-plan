@@ -163,18 +163,23 @@ const V3D = (() => {
   }
   /* 画質: 高＝影 4096・AO・ブルーム・木はすべて細かい形 / 標準＝影 2048・MSAA 2・遠くの木は簡略形 / 軽量＝ポスト処理も影もなし・木はすべて簡略形 */
   const quality = () => (st.post && QUALITY[opts.quality] ? opts.quality : st.post ? 'high' : 'low');
-  /* 動的解像度: 視点を動かしている間、フレーム時間が長ければ解像度を段階的に下げ（速ければ戻し）、止まったら元の解像度で描き直す */
+  /* 動的解像度: 視点を動かしている間、フレーム時間が長ければ描画解像度を段階的に下げ（速ければ戻し）、止まったら元の解像度で描き直す。
+   * 下げた解像度の画は FSR 1.0 相当（EASU＋RCAS、v3d-fx.js）で表示解像度に拡大する。canvas の大きさは変えない。
+   * 浮動小数のレンダーターゲットが使えない環境だけは canvas の解像度ごと下げる（ブラウザの拡大） */
   const dyn = { scale: 1, applied: 1, ema: 0, last: 0, upAt: 0, downAt: 0, done: true };
-  function setScale(s) {
+  function setPR(s) {
     const r = st.renderer, box = st.el.querySelector('.v3canvas'), dpr = window.devicePixelRatio || 1;
-    dyn.applied = s;
     r.setPixelRatio(Math.min(QSET[quality()].pr, dpr) * s);
     r.setSize(box.clientWidth || 1, box.clientHeight || 1);
+  }
+  function setScale(s) {
+    dyn.applied = s;
+    if (!st.post) setPR(s);
   }
   function applyQuality() {
     const q = quality(), Q = QSET[q];
     dyn.scale = Math.max(dyn.scale, Q.minScale); dyn.ema = 0;
-    setScale(1);
+    setPR(1); dyn.applied = 1;
     setShadows(Q.shadow > 0, Q.shadow);
     const fog = q === 'low'; // 軽量ではポスト処理の霞の代わりに単純なフォグで遠景をなじませる
     if (!!st.scene.fog !== fog) { st.scene.fog = fog ? new T.FogExp2(0xb9c7d3, 0.00009) : null; st.scene.traverse((m) => { if (m.material) [].concat(m.material).forEach((mt) => { mt.needsUpdate = true; }); }); }
@@ -235,10 +240,11 @@ const V3D = (() => {
       const key = [shadowGen, treeLodVer, sp.x, sp.y, sp.z, sc.right, st.sun.shadow.mapSize.x, st.world ? st.world.id : 0, st.world ? st.world.scale.y : 0, st.trees ? st.trees.id : 0].join();
       if (shot || key !== lastShadowKey) { r.shadowMap.needsUpdate = true; lastShadowKey = shot ? '' : key; }
     }
-    if (q === 'low' || !st.post) { r.setRenderTarget(null); r.render(st.scene, cam); return; }
+    const scale = shot || !st.post ? 1 : dyn.applied;
+    if (q === 'low' || !st.post) { FX.renderLite(r, st.scene, cam, { scale, samples: 2 }); return; }
     const hz = opts.haze / 100;
     FX.render(r, st.scene, cam, {
-      samples: shot ? 4 : QSET[q].msaa, fog: 2e-5 + 8e-4 * hz * hz, fogH: 900 + 900 * hz, ao: q === 'high' || shot ? 1 : 0.85, cloudShadow: 0.85,
+      samples: shot ? 4 : QSET[q].msaa, scale, fog: 2e-5 + 8e-4 * hz * hz, fogH: 900 + 900 * hz, ao: q === 'high' || shot ? 1 : 0.85, cloudShadow: 0.85,
       exposure: 1.25, bloom: q === 'high' ? 0.55 : 0.35, saturation: 1.1, vignette: 0.28,
     });
   }
@@ -1351,5 +1357,5 @@ const V3D = (() => {
     e.stopImmediatePropagation();
   }, true);
 
-  return { open, close, toggle, changed, isOpen: () => st.open, _st: st, _render: () => renderFrame() };
+  return { open, close, toggle, changed, isOpen: () => st.open, _st: st, _dyn: dyn, _render: () => renderFrame() };
 })();
