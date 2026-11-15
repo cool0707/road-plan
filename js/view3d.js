@@ -15,6 +15,13 @@ const V3D = (() => {
   };
   const SHOTS = { screen2: '画面の 2 倍', fhd: '1920 × 1080', '4k': '3840 × 2160', sq: '2048 × 2048' };
   const QUALITY = { high: '高（影・AO・ブルーム）', std: '標準', low: '軽量（影なし）' };
+  /* 画質ごとの設定。pr: 解像度（devicePixelRatio の上限）, msaa: ポスト処理のサンプル数, shadow: 影テクスチャの解像度（0 で影なし）,
+   * lod: 木を細かい形で描く距離 [m]（それより遠い木は簡略形。Infinity で全部細かく）, minScale: 重いときに解像度を下げる下限 */
+  const QSET = {
+    high: { pr: 2, msaa: 4, shadow: 4096, lod: Infinity, minScale: 0.7 },
+    std: { pr: 1.5, msaa: 2, shadow: 2048, lod: 260, minScale: 0.55 },
+    low: { pr: 1.25, msaa: 0, shadow: 0, lod: 0, minScale: 0.5 },
+  };
   const defOpts = { tex: 'photo', exag: 1, existing: true, lamps: true, buildings: true, sunAz: 150, sunAlt: 38, clouds: 40, haze: 35, quality: 'high', shot: 'screen2', caption: true, trees: 'auto', treeDensity: 80, brush: 20 };
   let opts = Object.assign({}, defOpts);
   try { Object.assign(opts, JSON.parse(localStorage.getItem(OPT_KEY)) || {}); } catch (e) { /* 既定値 */ }
@@ -134,6 +141,7 @@ const V3D = (() => {
     r.outputColorSpace = T.SRGBColorSpace;
     r.toneMapping = T.ACESFilmicToneMapping; r.toneMappingExposure = 0.8;
     r.shadowMap.type = T.PCFSoftShadowMap;
+    r.shadowMap.autoUpdate = false; // 影は太陽・影の範囲・影を落とす物が変わったときだけ描き直す（renderFrame）
     box.appendChild(r.domElement);
     st.scene = new T.Scene();
     st.camera = new T.PerspectiveCamera(46, 1, 0.5, 400000);
@@ -153,34 +161,70 @@ const V3D = (() => {
     applyQuality(); placeSun();
     st.ro = new ResizeObserver(resize); st.ro.observe(box); resize();
   }
-  /* 画質: 高＝影 4096・AO・ブルーム / 標準＝影 2048・解像度控えめ / 軽量＝ポスト処理も影もなし */
+  /* 画質: 高＝影 4096・AO・ブルーム・木はすべて細かい形 / 標準＝影 2048・MSAA 2・遠くの木は簡略形 / 軽量＝ポスト処理も影もなし・木はすべて簡略形 */
   const quality = () => (st.post && QUALITY[opts.quality] ? opts.quality : st.post ? 'high' : 'low');
+  /* 動的解像度: 視点を動かしている間、フレーム時間が長ければ描画解像度を段階的に下げ（速ければ戻し）、止まったら元の解像度で描き直す。
+   * 下げた解像度の画は FSR 1.0 相当（EASU＋RCAS、v3d-fx.js）で表示解像度に拡大する。canvas の大きさは変えない。
+   * 浮動小数のレンダーターゲットが使えない環境だけは canvas の解像度ごと下げる（ブラウザの拡大） */
+  const dyn = { scale: 1, applied: 1, ema: 0, last: 0, upAt: 0, downAt: 0, done: true };
+  function setPR(s) {
+    const r = st.renderer, box = st.el.querySelector('.v3canvas'), dpr = window.devicePixelRatio || 1;
+    r.setPixelRatio(Math.min(QSET[quality()].pr, dpr) * s);
+    r.setSize(box.clientWidth || 1, box.clientHeight || 1);
+  }
+  function setScale(s) {
+    dyn.applied = s;
+    if (!st.post) setPR(s);
+  }
   function applyQuality() {
-    const q = quality(), r = st.renderer, dpr = window.devicePixelRatio || 1;
-    r.setPixelRatio(q === 'high' ? Math.min(2, dpr) : Math.min(1.5, dpr));
-    const box = st.el.querySelector('.v3canvas'); r.setSize(box.clientWidth || 1, box.clientHeight || 1);
-    setShadows(q !== 'low', q === 'high' ? 4096 : 2048);
+    const q = quality(), Q = QSET[q];
+    dyn.scale = Math.max(dyn.scale, Q.minScale); dyn.ema = 0;
+    setPR(1); dyn.applied = 1;
+    setShadows(Q.shadow > 0, Q.shadow);
     const fog = q === 'low'; // 軽量ではポスト処理の霞の代わりに単純なフォグで遠景をなじませる
     if (!!st.scene.fog !== fog) { st.scene.fog = fog ? new T.FogExp2(0xb9c7d3, 0.00009) : null; st.scene.traverse((m) => { if (m.material) [].concat(m.material).forEach((mt) => { mt.needsUpdate = true; }); }); }
     requestRender();
   }
-  /* 描画は変化があったときだけ（減衰が止まるまで数フレーム続ける） */
-  let settle = 0;
+  /* 描画は変化があったときだけ。視点の減衰が続く間は見張り、実際に動いたフレームだけ描く。
+   * 止まって少したったら、動的解像度で下げていた解像度を戻して 1 枚描き直す */
+  let settle = 0, dirty = false;
   function requestRender() {
-    settle = 20;
+    settle = 20; dirty = true;
     if (st.raf || !st.open) return;
     const loop = () => {
       st.raf = 0;
       if (!st.open) return;
-      st.controls.update();
-      renderFrame();
+      st.controls.update(); // 動いていれば change → requestRender で dirty になる
+      const now = performance.now();
+      if (dirty) {
+        dirty = false;
+        if (!dyn.done) adaptScale(now); else dyn.last = 0;
+        dyn.done = false;
+        renderFrame();
+        dyn.last = now;
+      } else dyn.last = 0;
       if (--settle > 0) st.raf = requestAnimationFrame(loop);
+      else if (!dyn.done) { dyn.done = true; dyn.last = 0; if (dyn.applied !== 1) { setScale(1); renderFrame(); } }
     };
     st.raf = requestAnimationFrame(loop);
+  }
+  function adaptScale(now) {
+    const Q = QSET[quality()];
+    if (dyn.last) {
+      const dt = Math.min(100, now - dyn.last);
+      dyn.ema = dyn.ema ? dyn.ema * 0.8 + dt * 0.2 : dt;
+      if (dyn.ema > 26 && dyn.scale > Q.minScale && now > dyn.downAt) { // 38fps を切る → 下げる
+        dyn.scale = Math.max(Q.minScale, Math.round((dyn.scale - 0.15) * 20) / 20); dyn.downAt = now + 300; dyn.upAt = now + 3000; dyn.ema = 0;
+      } else if (dyn.ema < 18.5 && dyn.scale < 1 && now > dyn.upAt) { // 安定して 55fps 前後 → 少し戻す
+        dyn.scale = Math.min(1, Math.round((dyn.scale + 0.1) * 20) / 20); dyn.upAt = now + 1500; dyn.ema = 0;
+      }
+    }
+    if (dyn.applied !== dyn.scale) setScale(dyn.scale);
   }
   /* 1 フレーム。手前の切れと奥行き精度のため near をカメラの距離・地表からの高さに合わせ、影の範囲も視点に合わせる */
   function renderFrame(shot) {
     const cam = st.camera, r = st.renderer, q = shot ? 'high' : quality();
+    treeLod(shot ? Infinity : QSET[q].lod);
     if (st.info) {
       const { ex, G, base } = st.info, d = cam.position.distanceTo(st.controls.target);
       const gx = cam.position.x + ex.cx, gy = ex.cy - cam.position.z;
@@ -191,16 +235,23 @@ const V3D = (() => {
       FX.U.uCamKm.value.set(cam.position.x * 0.001, cam.position.z * 0.001);
       if (q !== 'low') fitShadow(d);
     }
-    if (q === 'low' || !st.post) { r.setRenderTarget(null); r.render(st.scene, cam); return; }
+    if (st.sun.castShadow) { // 影の描き直しは変化があったときだけ
+      const sc = st.sun.shadow.camera, sp = st.sun.position;
+      const key = [shadowGen, treeLodVer, sp.x, sp.y, sp.z, sc.right, st.sun.shadow.mapSize.x, st.world ? st.world.id : 0, st.world ? st.world.scale.y : 0, st.trees ? st.trees.id : 0].join();
+      if (shot || key !== lastShadowKey) { r.shadowMap.needsUpdate = true; lastShadowKey = shot ? '' : key; }
+    }
+    const scale = shot || !st.post ? 1 : dyn.applied;
+    if (q === 'low' || !st.post) { FX.renderLite(r, st.scene, cam, { scale, samples: 2 }); return; }
     const hz = opts.haze / 100;
     FX.render(r, st.scene, cam, {
-      samples: 4, fog: 2e-5 + 8e-4 * hz * hz, fogH: 900 + 900 * hz, ao: q === 'high' || shot ? 1 : 0.85, cloudShadow: 0.85,
+      samples: shot ? 4 : QSET[q].msaa, scale, fog: 2e-5 + 8e-4 * hz * hz, fogH: 900 + 900 * hz, ao: q === 'high' || shot ? 1 : 0.85, cloudShadow: 0.85,
       exposure: 1.25, bloom: q === 'high' ? 0.55 : 0.35, saturation: 1.1, vignette: 0.28,
     });
   }
 
   function disposeTree(o) {
     o.traverse((m) => {
+      if (m.isInstancedMesh) m.dispose(); // インスタンス行列・色のバッファ
       if (m.geometry) m.geometry.dispose();
       if (m.material) [].concat(m.material).forEach((mt) => { if (mt.map && !mt.map.userData.cached) mt.map.dispose(); if (mt.userData.waterTex) mt.userData.waterTex.dispose(); mt.dispose(); });
     });
@@ -490,6 +541,29 @@ const V3D = (() => {
     const t = new T.CanvasTexture(c); t.colorSpace = T.SRGBColorSpace; t.wrapS = t.wrapT = T.RepeatWrapping; t.anisotropy = 8; t.userData.cached = true;
     return (asphaltT[key] = t);
   }
+  /* インデックスなしのジオメトリを三角形の重心で size [m] 四方の区画に分ける（区画ごとのメッシュにして視錐台カリングを効かせる） */
+  function splitByCell(geo, size) {
+    if (geo.index) return [geo];
+    const P = geo.attributes.position, n = Math.floor(P.count / 3), bins = new Map();
+    for (let t = 0; t < n; t++) {
+      const k = t * 3, x = (P.getX(k) + P.getX(k + 1) + P.getX(k + 2)) / 3, z = (P.getZ(k) + P.getZ(k + 1) + P.getZ(k + 2)) / 3;
+      const key = Math.floor(x / size) + ',' + Math.floor(z / size);
+      let b = bins.get(key); if (!b) bins.set(key, (b = [])); b.push(t);
+    }
+    if (bins.size <= 1) return [geo];
+    const out = [];
+    for (const tris of bins.values()) {
+      const g = new T.BufferGeometry();
+      for (const name in geo.attributes) {
+        const a = geo.attributes[name], m = a.itemSize * 3, dst = new a.array.constructor(tris.length * m);
+        tris.forEach((t, i) => dst.set(a.array.subarray(t * m, t * m + m), i * m));
+        g.setAttribute(name, new T.BufferAttribute(dst, a.itemSize, a.normalized));
+      }
+      out.push(g);
+    }
+    geo.dispose();
+    return out;
+  }
   function mesh(geo, material, shadow = true) { const m = new T.Mesh(geo, material); m.castShadow = shadow; m.receiveShadow = true; return m; }
 
   function build(ex, G, roadsX, base, excl) {
@@ -540,8 +614,8 @@ const V3D = (() => {
         const bm = new T.MeshStandardMaterial({ vertexColors: true, roughness: 0.86, metalness: 0 });
         bm.userData.roofMap = { value: G.tex ? G.tex.tex : null };
         FX.U.uRoofPhoto.value = G.tex && opts.tex === 'photo' ? 1 : 0;
-        const bmesh = mesh(B.geometry, FX.patchBuilding(bm)); bmesh.name = 'buildings';
-        world.add(bmesh);
+        const bmat = FX.patchBuilding(bm);
+        for (const g of splitByCell(B.geometry, Math.max(200, ex.D / 8))) { const bmesh = mesh(g, bmat); bmesh.name = 'buildings'; world.add(bmesh); } // 区画ごとに分けて視野外を描かない
       }
       world.userData.buildings = B.count; world.userData.measured = B.measured; world.userData.footprints = B.footprints;
     }
@@ -922,7 +996,21 @@ const V3D = (() => {
           const U = [[u0, v0 + 0.5], [u0 + 0.5, v0 + 0.5], [u0 + 0.5, v0], [u0, v0]];
           for (const k of [0, 1, 2, 0, 2, 3]) push(P[k], U[k], shade, W);
         },
-        done() { const g = new T.BufferGeometry(); g.setAttribute('position', new T.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new T.Float32BufferAttribute(nor, 3)); g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2)); g.setAttribute('color', new T.Float32BufferAttribute(col, 3)); return g; },
+        // 頂点を共有する立体（簡略形用）。同じ位置の頂点はまとめてインデックスで描く
+        shared(geo, shade, xf, tint = W) {
+          const a = geo.attributes.position, idx = [], map = new Map(), at = (k) => {
+            const key = [a.getX(k), a.getY(k), a.getZ(k)].map((v) => Math.round(v * 1e4)).join();
+            let n = map.get(key);
+            if (n == null) { n = pos.length / 3; map.set(key, n); const q = xf([a.getX(k), a.getY(k), a.getZ(k)]); push(q, [0.25, 0.25], shade * (0.8 + 0.35 * hash(Math.round(q[0] * 911), Math.round(q[1] * 677), Math.round(q[2] * 733))), tint); } // 頂点ごとに明暗のむら
+            return n;
+          };
+          const ia = geo.index;
+          for (let k = 0; k < (ia ? ia.count : a.count); k++) idx.push(at(ia ? ia.getX(k) : k));
+          for (let k = 0; k < idx.length; k += 3) if (idx[k] !== idx[k + 1] && idx[k + 1] !== idx[k + 2] && idx[k] !== idx[k + 2]) this.idx.push(idx[k], idx[k + 1], idx[k + 2]);
+          geo.dispose();
+        },
+        idx: [],
+        done() { const g = new T.BufferGeometry(); g.setAttribute('position', new T.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new T.Float32BufferAttribute(nor, 3)); g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2)); g.setAttribute('color', new T.Float32BufferAttribute(col, 3)); if (this.idx.length) g.setIndex(this.idx); return g; },
       };
     };
     const bark = [1.5, 1.05, 0.75];
@@ -950,7 +1038,13 @@ const V3D = (() => {
       const cone = new T.ConeGeometry(0.105, 0.74, 7, 1, true); cone.translate(0, 0.6, 0); C.solid(cone, 0.6, [1, 1, 1], [0.25, 0.25]);
       for (let k = 0; k < 3; k++) { const th = (k / 3) * 3.14159 + 0.2; C.card([0, 0.59, 0], [Math.cos(th) * 0.2, 0, Math.sin(th) * 0.2], [0, 0.42, 0], 0, 0.5, 0.95); }
       [[0.34, 0.215], [0.52, 0.165], [0.7, 0.11]].forEach(([y, r], k) => { const th = k * 1.1; C.card([0, y, 0], [Math.cos(th) * r, 0.02, Math.sin(th) * r], [-Math.sin(th) * r, -0.02, Math.cos(th) * r], 0.5, 0.5, 0.85); }); }
-    return { broad: B.done(), conifer: C.done() };
+    // 簡略形（遠景・標準／軽量画質用）: 葉むらのカード・幹を省き、外形をなぞる低ポリゴンの立体だけにする（透過の重なりも減る）
+    const jit = (x, y, z) => 0.8 + 0.3 * hash(Math.round(x * 97), Math.round(y * 89), Math.round(z * 83));
+    const BL = make(0.65, 0.3, 0.36);
+    BL.shared(new T.IcosahedronGeometry(1, 0), 0.5, ([x, y, z]) => { const j = 0.85 + 0.15 * jit(x, y, z); return [x * 0.37 * j, 0.66 + y * 0.29 * j, z * 0.37 * j]; }, [0.88, 1.08, 0.86]);
+    const CL = make(0.6, 0.42, 0.2);
+    { const cone = new T.ConeGeometry(0.19, 0.82, 6, 1, true); cone.translate(0, 0.59, 0); CL.shared(cone, 0.5, (p) => p); }
+    return { broad: B.done(), conifer: C.done(), broadLo: BL.done(), coniferLo: CL.done() };
   }
   /* 木の色: 樹種ごとの基本色に、航空写真のその場所の色合いを混ぜる（明るい竹林・暗い植林などの違いが出る） */
   function treeColor(col, t, photo) {
@@ -967,7 +1061,20 @@ const V3D = (() => {
     }
     return col;
   }
-  let _pc = null;
+  let _pc = null, treeLodVer = 0;
+  /* 区画ごとに、カメラから dist [m] より近ければ細かい形、遠ければ簡略形を表示する */
+  function treeLod(dist) {
+    const chunks = st.trees && st.trees.userData.chunks; if (!chunks) return;
+    const c = st.camera.position;
+    for (const ch of chunks) {
+      const dx = Math.max(0, ch.x0 - c.x, c.x - ch.x1), dz = Math.max(0, ch.z0 - c.z, c.z - ch.z1);
+      const detail = dist === Infinity || (dist > 0 && dx * dx + dz * dz + (c.y - ch.y) ** 2 < dist * dist);
+      if (detail === ch.detail) continue;
+      ch.detail = detail; treeLodVer++;
+      for (const m of ch.hi) m.visible = detail;
+      for (const m of ch.lo) m.visible = !detail;
+    }
+  }
   function buildTrees() {
     if (st.trees) { disposeTree(st.trees); st.trees = null; }
     if (!st.info || !st.open) return;
@@ -1014,22 +1121,39 @@ const V3D = (() => {
       items.push({ x, y, z: terrainAt(G, ex, x, y), h, conifer, w: (conifer ? 0.85 : 1.0) + 0.4 * hash(i, j, 6), rot: hash(i, j, 7) * Math.PI * 2, c: hash(i, j, 8) });
     }
     if (!items.length) { if (cntEl) cntEl.textContent = '0 本'; return requestRender(); }
+    // 区画ごとに InstancedMesh を分ける（視野外の区画は描かない＝視錐台カリング。遠い区画は簡略形に切り替える）。
+    // 細かい形と簡略形は同じインスタンス行列・色を共有する
     const geos = treeGeos(), group = new T.Group();
     const leafM = FX.patchFoliage(new T.MeshStandardMaterial({ map: leafTexture(), alphaTest: 0.4, alphaToCoverage: true, vertexColors: true, roughness: 0.8, metalness: 0, side: T.DoubleSide }));
-    const nC = items.filter((t) => t.conifer).length;
-    const mC = new T.InstancedMesh(geos.conifer, leafM, Math.max(1, nC)), mB = new T.InstancedMesh(geos.broad, leafM, Math.max(1, items.length - nC));
-    mC.count = nC; mB.count = items.length - nC;
+    const CH = Math.max(150, ex.D / 10), bins = new Map();
+    for (const t of items) {
+      const key = Math.floor((t.x - ex.x0) / CH) + ',' + Math.floor((t.y - ex.y0) / CH);
+      let b = bins.get(key); if (!b) bins.set(key, (b = { C: [], B: [] }));
+      (t.conifer ? b.C : b.B).push(t);
+    }
     const M = new T.Matrix4(), q = new T.Quaternion(), up = new T.Vector3(0, 1, 0), p = new T.Vector3(), s = new T.Vector3(), col = new T.Color();
     _pc = _pc || new T.Color();
-    let a = 0, b = 0;
-    items.forEach((t) => {
-      p.set(t.x - ex.cx, (t.z - base) * opts.exag - 0.3, -(t.y - ex.cy)); q.setFromAxisAngle(up, t.rot); s.set(t.h * t.w, t.h, t.h * t.w);
-      M.compose(p, q, s); treeColor(col, t, photo);
-      if (t.conifer) { mC.setMatrixAt(a, M); mC.setColorAt(a++, col); } else { mB.setMatrixAt(b, M); mB.setColorAt(b++, col); }
-    });
-    for (const m of [mC, mB]) { m.castShadow = m.receiveShadow = true; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; m.computeBoundingSphere(); }
-    if (!nC) mC.visible = false; if (nC === items.length) mB.visible = false;
-    group.add(mC, mB);
+    const chunks = [];
+    for (const b of bins.values()) {
+      const ch = { hi: [], lo: [], x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity, y: 0, detail: null };
+      for (const [list, gHi, gLo] of [[b.C, geos.conifer, geos.coniferLo], [b.B, geos.broad, geos.broadLo]]) {
+        if (!list.length) continue;
+        const hi = new T.InstancedMesh(gHi, leafM, list.length);
+        list.forEach((t, k) => {
+          p.set(t.x - ex.cx, (t.z - base) * opts.exag - 0.3, -(t.y - ex.cy)); q.setFromAxisAngle(up, t.rot); s.set(t.h * t.w, t.h, t.h * t.w);
+          M.compose(p, q, s); hi.setMatrixAt(k, M); hi.setColorAt(k, treeColor(col, t, photo));
+          ch.x0 = Math.min(ch.x0, p.x); ch.x1 = Math.max(ch.x1, p.x); ch.z0 = Math.min(ch.z0, p.z); ch.z1 = Math.max(ch.z1, p.z); ch.y += p.y + t.h / 2;
+        });
+        const lo = new T.InstancedMesh(gLo, leafM, list.length);
+        lo.instanceMatrix = hi.instanceMatrix; lo.instanceColor = hi.instanceColor;
+        for (const m of [hi, lo]) { m.castShadow = m.receiveShadow = true; m.computeBoundingSphere(); m.computeBoundingBox(); group.add(m); }
+        ch.hi.push(hi); ch.lo.push(lo);
+      }
+      ch.y /= b.C.length + b.B.length;
+      chunks.push(ch);
+    }
+    group.userData.chunks = chunks;
+    treeLodVer++;
     st.trees = group; st.scene.add(group);
     if (cntEl) cntEl.textContent = `${items.length.toLocaleString()} 本`;
     requestRender();
@@ -1169,6 +1293,7 @@ const V3D = (() => {
   function placeSun() {
     if (!st.sun) return;
     const az = (opts.sunAz * Math.PI) / 180, alt = (opts.sunAlt * Math.PI) / 180, hz = opts.haze / 100, cl = opts.clouds / 100;
+    shadowGen++;
     const dir = (st.sunDir = new T.Vector3(Math.sin(az) * Math.cos(alt), Math.sin(alt), -Math.cos(az) * Math.cos(alt)));
     FX.U.uSun.value.copy(dir); FX.U.uSky.value.set(hz, cl, 3.7, FX.E_SUN);
     const c = FX.sunColor(dir.y, hz), dim = 1 - 0.5 * cl * cl; // 雲が多いほど直達光は弱く
@@ -1183,7 +1308,8 @@ const V3D = (() => {
   function fitShadow(d) {
     const sun = st.sun, { ex } = st.info, dir = st.sunDir;
     if (!sun.castShadow || !dir) return;
-    const R = Math.min(ex.D * 0.78, Math.max(150, d * 1.5)), hm = st.info.hmax * opts.exag;
+    // 半径は 1.1 倍刻みに丸める（ズーム中も毎フレーム影を描き直さずに済むように）
+    const R = Math.min(ex.D * 0.78, 150 * Math.pow(1.1, Math.ceil(Math.log(Math.max(1, d * 1.5 / 150)) / Math.log(1.1)))), hm = st.info.hmax * opts.exag;
     const right = (_sv.r || (_sv.r = new T.Vector3())).set(0, 1, 0).cross(dir).normalize(), up = (_sv.u || (_sv.u = new T.Vector3())).crossVectors(dir, right);
     const c = (_sv.c || (_sv.c = new T.Vector3())).copy(st.controls.target);
     if (R >= ex.D * 0.78) c.set(0, hm / 2, 0); // 全体が入るときは中心固定
@@ -1204,8 +1330,9 @@ const V3D = (() => {
       r.shadowMap.enabled = !!on;
       st.scene.traverse((m) => { if (m.material) [].concat(m.material).forEach((mt) => { mt.needsUpdate = true; }); });
     }
-    r.shadowMap.needsUpdate = true;
+    r.shadowMap.needsUpdate = true; shadowGen++;
   }
+  let shadowGen = 0, lastShadowKey = '';
 
   /* ───────── 撮影（高解像度） ───────── */
   async function shoot() {
@@ -1287,5 +1414,5 @@ const V3D = (() => {
     e.stopImmediatePropagation();
   }, true);
 
-  return { open, close, toggle, changed, isOpen: () => st.open, _st: st, _render: () => renderFrame() };
+  return { open, close, toggle, changed, isOpen: () => st.open, _st: st, _dyn: dyn, _render: () => renderFrame() };
 })();
