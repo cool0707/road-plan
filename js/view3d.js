@@ -105,7 +105,7 @@ const V3D = (() => {
         <div class="v3btns"><button class="btn accent wide" data-v3act="shot">📷 高画質で撮影</button></div>
         <div class="v3btns"><button class="btn" data-v3act="reset">視点をリセット</button><button class="btn" data-v3act="top">真上から</button></div>
       </div>
-      <div class="v3hint">左ドラッグ: 回転　右・中ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム</div>
+      <div class="v3hint">${hintText(null)}</div>
       <div class="v3attr"></div>`;
     $('#stage').appendChild(el);
     el.addEventListener('input', (e) => {
@@ -148,6 +148,7 @@ const V3D = (() => {
     const c = (st.controls = new T.OrbitControls(st.camera, r.domElement));
     c.enableDamping = true; c.dampingFactor = 0.12; c.screenSpacePanning = false; c.maxPolarAngle = Math.PI * 0.495;
     c.mouseButtons = { LEFT: T.MOUSE.ROTATE, MIDDLE: T.MOUSE.PAN, RIGHT: T.MOUSE.PAN };
+    c.touches = { ONE: T.TOUCH.ROTATE, TWO: T.TOUCH.DOLLY_PAN }; // 1 本指: 回転 / 2 本指: ドラッグで移動・ピンチでズーム
     c.addEventListener('change', requestRender);
     r.domElement.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); }); // 中ボタンの自動スクロールを止める
     st.post = FX.init(T, r, st.scene); // false: 浮動小数のレンダーターゲットが使えない → ポスト処理なし
@@ -1161,8 +1162,18 @@ const V3D = (() => {
     requestRender();
   }
 
-  /* ブラシで森を塗る／消す */
-  const brush = { mode: null, ring: null, down: false, timer: 0, raf: 0, pending: null };
+  /* 操作の案内（タッチ端末では指の操作を出す） */
+  const coarse = () => !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  function hintText(mode) {
+    const act = mode === 'plant' ? '木を植える' : '木を消す';
+    if (coarse()) return mode ? `1 本指: ${act}　2 本指ドラッグ: 移動　ピンチ: ズーム` : '1 本指: 回転　2 本指ドラッグ: 移動　ピンチ: ズーム';
+    return mode
+      ? `左ドラッグ: ${act}　右ドラッグ: 回転　中ドラッグ / Shift+右ドラッグ: 移動　ホイール: ズーム　Esc: ブラシ終了`
+      : '左ドラッグ: 回転　右・中ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム';
+  }
+  /* ブラシで森を塗る／消す
+   * タッチでは 2 本目の指が触れたら塗りをやめ（2 本指は移動・ズーム）、1 本指は少し待ってから塗り始める */
+  const brush = { mode: null, ring: null, down: false, timer: 0, raf: 0, pending: null, touches: new Set(), multi: false, wait: null };
   function setBrush(mode) {
     brush.mode = brush.mode === mode ? null : mode;
     const c = st.controls;
@@ -1170,9 +1181,7 @@ const V3D = (() => {
     c.touches = { ONE: brush.mode ? null : T.TOUCH.ROTATE, TWO: T.TOUCH.DOLLY_PAN };
     if (brush.mode && opts.trees === 'off') { opts.trees = 'paint'; saveOpts(); st.el.querySelector('[data-v3=trees]').value = 'paint'; }
     st.el.querySelectorAll('[data-v3act^=brush-]').forEach((b) => b.classList.toggle('on', b.dataset.v3act === 'brush-' + brush.mode));
-    st.el.querySelector('.v3hint').textContent = brush.mode
-      ? `左ドラッグ: ${brush.mode === 'plant' ? '木を植える' : '木を消す'}　右ドラッグ: 回転　中ドラッグ / Shift+右ドラッグ: 移動　ホイール: ズーム　Esc: ブラシ終了`
-      : '左ドラッグ: 回転　右・中ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム';
+    st.el.querySelector('.v3hint').textContent = hintText(brush.mode);
     st.renderer.domElement.style.cursor = brush.mode ? 'crosshair' : '';
     if (brush.ring) brush.ring.visible = false;
     requestRender();
@@ -1212,18 +1221,41 @@ const V3D = (() => {
       if (!brush.mode) return;
       brush.pending = e;
       if (brush.raf) return;
+      if (brush.wait && e.pointerId === brush.wait.id && performance.now() - brush.wait.t > 90) startPaint(brush.wait.e);
       brush.raf = requestAnimationFrame(() => {
-        brush.raf = 0; const ev = brush.pending, h = brushHit(ev);
+        brush.raf = 0; const ev = brush.pending;
+        if (brush.multi) return showRing(null);
+        const h = brushHit(ev);
         showRing(h);
         if (brush.down && h) stamp(h);
       });
     });
-    cv.addEventListener('pointerdown', (e) => {
-      if (!brush.mode || e.button !== 0) return;
-      brush.down = true; cv.setPointerCapture(e.pointerId);
+    const startPaint = (e) => {
+      brush.wait = null; brush.down = true;
+      try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 指が離れた後 */ }
       const h = brushHit(e); if (h) stamp(h);
+    };
+    cv.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') brush.touches.add(e.pointerId);
+      if (!brush.mode || e.button !== 0) return;
+      if (e.pointerType !== 'touch') return startPaint(e);
+      if (brush.touches.size > 1) { // 2 本指 → 塗りをやめて移動・ズームに任せる
+        brush.multi = true; brush.wait = null; showRing(null);
+        if (brush.down) { brush.down = false; clearTimeout(brush.timer); brush.timer = 0; forestStore(); buildTrees(); }
+        return;
+      }
+      if (!brush.multi) brush.wait = { id: e.pointerId, t: performance.now(), e };
     });
-    const up = () => { if (!brush.down) return; brush.down = false; clearTimeout(brush.timer); brush.timer = 0; forestStore(); buildTrees(); };
+    const up = (e) => {
+      if (e.pointerType === 'touch') {
+        brush.touches.delete(e.pointerId);
+        if (brush.wait && brush.wait.id === e.pointerId && e.type === 'pointerup' && !brush.multi) startPaint(brush.wait.e); // 1 本指のタップ
+        brush.wait = null;
+        if (!brush.touches.size) brush.multi = false;
+      }
+      if (!brush.down) return;
+      brush.down = false; clearTimeout(brush.timer); brush.timer = 0; forestStore(); buildTrees();
+    };
     cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
     cv.addEventListener('pointerleave', () => { if (brush.mode && !brush.down) showRing(null); });
   }
