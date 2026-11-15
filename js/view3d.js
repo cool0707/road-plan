@@ -105,7 +105,7 @@ const V3D = (() => {
         <div class="v3btns"><button class="btn accent wide" data-v3act="shot">📷 高画質で撮影</button></div>
         <div class="v3btns"><button class="btn" data-v3act="reset">視点をリセット</button><button class="btn" data-v3act="top">真上から</button></div>
       </div>
-      <div class="v3hint">左ドラッグ: 回転　右ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム</div>
+      <div class="v3hint">左ドラッグ: 回転　右・中ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム</div>
       <div class="v3attr"></div>`;
     $('#stage').appendChild(el);
     el.addEventListener('input', (e) => {
@@ -147,7 +147,9 @@ const V3D = (() => {
     st.camera = new T.PerspectiveCamera(46, 1, 0.5, 400000);
     const c = (st.controls = new T.OrbitControls(st.camera, r.domElement));
     c.enableDamping = true; c.dampingFactor = 0.12; c.screenSpacePanning = false; c.maxPolarAngle = Math.PI * 0.495;
+    c.mouseButtons = { LEFT: T.MOUSE.ROTATE, MIDDLE: T.MOUSE.PAN, RIGHT: T.MOUSE.PAN };
     c.addEventListener('change', requestRender);
+    r.domElement.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); }); // 中ボタンの自動スクロールを止める
     st.post = FX.init(T, r, st.scene); // false: 浮動小数のレンダーターゲットが使えない → ポスト処理なし
     st.hemi = new T.HemisphereLight(0xdfeaff, 0x7a6a52, 1.1); st.hemi.visible = !st.post; // 環境マップ（空）が使えないときの環境光
     const sun = (st.sun = new T.DirectionalLight(0xfff0dc, 2.8));
@@ -1164,13 +1166,13 @@ const V3D = (() => {
   function setBrush(mode) {
     brush.mode = brush.mode === mode ? null : mode;
     const c = st.controls;
-    c.mouseButtons = brush.mode ? { LEFT: null, MIDDLE: T.MOUSE.DOLLY, RIGHT: T.MOUSE.ROTATE } : { LEFT: T.MOUSE.ROTATE, MIDDLE: T.MOUSE.DOLLY, RIGHT: T.MOUSE.PAN };
+    c.mouseButtons = brush.mode ? { LEFT: null, MIDDLE: T.MOUSE.PAN, RIGHT: T.MOUSE.ROTATE } : { LEFT: T.MOUSE.ROTATE, MIDDLE: T.MOUSE.PAN, RIGHT: T.MOUSE.PAN };
     c.touches = { ONE: brush.mode ? null : T.TOUCH.ROTATE, TWO: T.TOUCH.DOLLY_PAN };
     if (brush.mode && opts.trees === 'off') { opts.trees = 'paint'; saveOpts(); st.el.querySelector('[data-v3=trees]').value = 'paint'; }
     st.el.querySelectorAll('[data-v3act^=brush-]').forEach((b) => b.classList.toggle('on', b.dataset.v3act === 'brush-' + brush.mode));
     st.el.querySelector('.v3hint').textContent = brush.mode
-      ? `左ドラッグ: ${brush.mode === 'plant' ? '木を植える' : '木を消す'}　右ドラッグ: 回転　Shift+右ドラッグ: 移動　ホイール: ズーム　Esc: ブラシ終了`
-      : '左ドラッグ: 回転　右ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム';
+      ? `左ドラッグ: ${brush.mode === 'plant' ? '木を植える' : '木を消す'}　右ドラッグ: 回転　中ドラッグ / Shift+右ドラッグ: 移動　ホイール: ズーム　Esc: ブラシ終了`
+      : '左ドラッグ: 回転　右・中ドラッグ / Shift+ドラッグ: 移動　ホイール: ズーム';
     st.renderer.domElement.style.cursor = brush.mode ? 'crosshair' : '';
     if (brush.ring) brush.ring.visible = false;
     requestRender();
