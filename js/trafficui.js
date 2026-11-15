@@ -8,7 +8,7 @@ const TrafficUI = (() => {
   const T = Traffic;
   const st = { on: false, view: 'base', color: 'vc', net: null, sig: '', res: null, resSig: '', runMs: 0, sel: null, dock: false, showCensus: false, drawSig: '', timer: 0, censusIndex: null, censusTiles: new Map(), focus: null };
   const DIFF = [{ max: -0.3, color: '#184f95', name: '30% 以上の減少' }, { max: -0.05, color: '#5598e7', name: '5〜30% の減少' }, { max: 0.05, color: '#a3a29b', name: 'ほぼ変化なし（±5%）' }, { max: 0.3, color: '#e2571f', name: '5〜30% の増加' }, { max: Infinity, color: '#a11d17', name: '30% 以上の増加' }];
-  const PLAN_COLOR = '#6250d6';
+  const PLAN_COLOR = '#6250d6', ABOL_COLOR = '#55534d'; // 計画道路 / 計画で廃止する既存道路
   const VIEWS = { base: '現況データ', before: '整備なし', after: '整備あり', diff: '差' };
   const n0 = (v) => (v == null || !isFinite(v) ? '—' : Math.round(v).toLocaleString('ja-JP'));
   const nr = (v) => (v == null || !isFinite(v) ? '—' : n0(v >= 10000 ? Math.round(v / 100) * 100 : v >= 1000 ? Math.round(v / 10) * 10 : v)); // 予測・推定は丸めて表示
@@ -19,8 +19,8 @@ const TrafficUI = (() => {
 
   /* ───────── 状態 ───────── */
   function tr() {
-    if (!project.traffic) project.traffic = { set: {}, obs: [], edits: {} };
-    const t = project.traffic; t.set = t.set || {}; t.obs = t.obs || []; t.edits = t.edits || {};
+    if (!project.traffic) project.traffic = { set: {}, obs: [], edits: {}, abolish: [] };
+    const t = project.traffic; t.set = t.set || {}; t.obs = t.obs || []; t.edits = t.edits || {}; t.abolish = t.abolish || []; // abolish: 計画で廃止する既存道路 [{ id, name, ll:[[lat,lng],…] }]
     return t;
   }
   const setting = () => Object.assign({}, T.DEFAULTS, tr().set);
@@ -33,7 +33,7 @@ const TrafficUI = (() => {
   /* ───────── ネットワーク ───────── */
   function signature() {
     const t = tr(), s = setting();
-    return [project.roads.map((r) => [r.id, JSON.stringify(r.ips), r.lanes, r.cls, r.V, r.visible, r.tv, r.tcross, r.name].join()).join(';'), project.existing.length, project.origin && project.origin.lat, JSON.stringify(t.edits), s.area, s.crossPlanned, s.scope, s.motorway, s.alpha, s.beta].join('|');
+    return [project.roads.map((r) => [r.id, JSON.stringify(r.ips), r.lanes, r.cls, r.V, r.visible, r.tv, r.tcross, r.name].join()).join(';'), project.existing.length, project.origin && project.origin.lat, JSON.stringify(t.edits), t.abolish.map((a) => a.id).join(), s.area, s.crossPlanned, s.scope, s.motorway, s.alpha, s.beta].join('|');
   }
   let exRef = null, obsRef = null;
   function ensureNet() {
@@ -67,7 +67,8 @@ const TrafficUI = (() => {
       p: o.pt ? P.toXY(o.pt) : null, av: o.az == null ? null : { x: Math.sin((o.az * Math.PI) / 180), y: Math.cos((o.az * Math.PI) / 180) },
       ls: o.lines ? o.lines.map((l) => { const a = []; for (let i = 0; i < l.length; i += 2) a.push(P.toXY([l[i], l[i + 1]])); return a; }) : null,
     }));
-    T.prepare(net, obs, { area: +s.area || 0, edits: t.edits, alpha: s.alpha, beta: s.beta });
+    const abolish = t.abolish.map((a) => ({ id: a.id, xy: a.ll.map((p) => P.toXY(p)) }));
+    T.prepare(net, obs, { area: +s.area || 0, edits: t.edits, abolish, alpha: s.alpha, beta: s.beta });
     net.edges.forEach((e) => { e.ll = e.pts.map((p) => P.toLL(p[0], p[1])); });
     net.byKey = new Map(net.edges.map((e, i) => [e.key, i]));
     net.obsInfo = new Map(obs.map((o) => [o.id, { unmatched: !!o.unmatched, dirUnknown: !!o.dirUnknown, edgeKey: o.edgeKey }]));
@@ -152,7 +153,8 @@ const TrafficUI = (() => {
       for (const i of order) {
         const e = net.edges[i];
         let color, w, dash = null, kind, op = 1;
-        if (st.view === 'diff') {
+        if (e.abolish && (st.view === 'after' || st.view === 'diff')) { color = ABOL_COLOR; w = 3; dash = '4 6'; kind = 'abol'; op = 0.85; }
+        else if (st.view === 'diff') {
           const b = edgeView(i, 'before'), a = edgeView(i, 'after'); if (!a) continue;
           if (e.planned) { color = PLAN_COLOR; w = 2 + 8 * Math.sqrt(a.vol / vmax); }
           else { const d = a.vol - b.vol, rel = Math.abs(d) < vmax * 0.004 ? 0 : d / Math.max(b.vol, 1); color = DIFF.find((c) => rel < c.max).color; w = 1.5 + 9 * Math.sqrt(Math.abs(d) / vmax); if (rel === 0) op = 0.7; }
@@ -168,6 +170,8 @@ const TrafficUI = (() => {
         const pl = L.polyline(e.ll, { ...base, color, weight: w, opacity: op, dashArray: dash, lineCap: dash ? 'butt' : 'round' }).addTo(group); pl._ei = i;
         if (kind === 'pred' && w >= 3) L.polyline(e.ll, { ...base, color: '#fff', weight: Math.max(1, w * 0.22), opacity: 0.95, dashArray: '1 7', lineCap: 'round', interactive: false }).addTo(group);
       }
+      /* 廃止する道路は、現況・整備なしの表示でも縁取りで示す */
+      if (st.view === 'base' || st.view === 'before') net.edges.forEach((e, i) => { if (e.abolish) { const pl = L.polyline(e.ll, { renderer, pane: 'traffic', color: ABOL_COLOR, weight: 2, opacity: 0.9, dashArray: '2 6', interactive: false }); pl.addTo(group); } });
       drawObs(net);
     }
     gSel.clearLayers();
@@ -197,8 +201,8 @@ const TrafficUI = (() => {
   function edgeTip(i) {
     const e = st.net.edges[i], b = edgeView(i, 'base'), x0 = edgeView(i, 'before'), x1 = edgeView(i, 'after');
     const row = (name, q, mark) => (q ? `<tr><td>${name}</td><td>${mark}</td><td>${q.kind === 'real' ? n0(q.vol) : nr(q.vol)}</td><td>${fmt(q.vc, 2)}</td></tr>` : '');
-    return `<b>${esc(e.name || T.KIND_JA[e.kind])}</b>${e.planned ? '（計画道路）' : ''}<span class="mu">${e.lanesEff}車線・${T.PERIODS[period()].short}</span>
-      <table><tr><th></th><th></th><th>両方向 ${unit()}</th><th>混雑度</th></tr>${b ? row('現況', b, stMark(e.bst.includes('attr') ? 'attr' : b.kind)) : ''}${row('整備なし', x0, stMark('pred'))}${row('整備あり', x1, stMark('pred'))}</table>`;
+    return `<b>${esc(e.name || T.KIND_JA[e.kind])}</b>${e.planned ? '（計画道路）' : e.abolish ? '（計画で廃止）' : ''}<span class="mu">${e.lanesEff}車線・${T.PERIODS[period()].short}</span>
+      <table><tr><th></th><th></th><th>両方向 ${unit()}</th><th>混雑度</th></tr>${b ? row('現況', b, stMark(e.bst.includes('attr') ? 'attr' : b.kind)) : ''}${row('整備なし', x0, stMark('pred'))}${e.abolish ? (x1 ? '<tr><td>整備あり</td><td></td><td>廃止</td><td></td></tr>' : '') : row('整備あり', x1, stMark('pred'))}</table>`;
   }
 
   /* ───────── 右パネル ───────── */
@@ -220,7 +224,8 @@ const TrafficUI = (() => {
   }
   function legend() {
     const sw = (c, t) => `<span><i style="background:${c}"></i>${t}</span>`;
-    const bins = st.view === 'diff' ? DIFF.map((c) => sw(c.color, c.name)).join('') + sw(PLAN_COLOR, '計画道路') : st.color === 'vc' ? T.CONGESTION.map((c) => sw(c.color, '混雑度 ' + c.name)).join('') : `<span><i class="ramp" style="background:linear-gradient(90deg,${SEQ.join(',')})"></i>交通量 少 → 多（最大 ${nr(st.vmax)} ${unit()}）</span>`;
+    const ab = st.net && st.net.edges.some((e) => e.abolish) ? `<span><i class="l-abol"></i>計画で廃止</span>` : '';
+    const bins = st.view === 'diff' ? DIFF.map((c) => sw(c.color, c.name)).join('') + sw(PLAN_COLOR, '計画道路') + ab : (st.color === 'vc' ? T.CONGESTION.map((c) => sw(c.color, '混雑度 ' + c.name)).join('') : `<span><i class="ramp" style="background:linear-gradient(90deg,${SEQ.join(',')})"></i>交通量 少 → 多（最大 ${nr(st.vmax)} ${unit()}）</span>`) + ab;
     return `<div class="tr-legend">${bins}</div><div class="tr-legend ln"><span><i class="l-real"></i>実データ</span><span><i class="l-est"></i>推定</span><span><i class="l-pred"></i>予測（配分計算）</span><span class="muted">太さ = ${st.view === 'diff' ? '増減の大きさ' : '交通量'}</span></div>`;
   }
   function linkCard(i) {
@@ -232,11 +237,12 @@ const TrafficUI = (() => {
     for (let d = 0; d < 2; d++) {
       if (!okd(d)) continue;
       const b = e.planned ? null : e.base[d], x0 = r && !e.planned ? r.before.x[2 * i + d] : null, x1 = r ? r.after.x[2 * i + d] : null, c = cap(d);
-      const piv = e.bst[d] === 'real' && x0 != null && r.hasPlan ? Math.max(0, b * (r.params.growth || 1) + (x1 - x0)) : null;
+      const piv = e.bst[d] === 'real' && x0 != null && r.hasPlan && !e.abolish ? Math.max(0, b * (r.params.growth || 1) + (x1 - x0)) : null;
       rows += `<tr><th colspan="5">${dn[d]}${udName(d)}</th></tr>
         ${b != null ? `<tr><td>現況</td><td>${stMark(e.bst[d], e.bconv[d])}</td><td>${e.bst[d] === 'real' && !e.bconv[d] ? n0(b) : nr(b)}</td><td>${fmt(b / c, 2)}</td><td></td></tr>` : ''}
         ${x0 != null ? `<tr><td>整備なし</td><td>${stMark('pred')}</td><td>${nr(x0)}</td><td>${fmt(x0 / c, 2)}</td><td></td></tr>` : ''}
-        ${x1 != null ? `<tr><td>整備あり</td><td>${stMark('pred')}</td><td>${nr(x1)}</td><td>${fmt(x1 / c, 2)}</td><td class="${x0 != null && x1 < x0 ? 'dn' : 'up'}">${x0 != null ? pct(x1, x0) : ''}</td></tr>` : ''}
+        ${x1 != null && e.abolish ? `<tr><td>整備あり</td><td></td><td colspan="3">廃止（通行できない）</td></tr>` : ''}
+        ${x1 != null && !e.abolish ? `<tr><td>整備あり</td><td>${stMark('pred')}</td><td>${nr(x1)}</td><td>${fmt(x1 / c, 2)}</td><td class="${x0 != null && x1 < x0 ? 'dn' : 'up'}">${x0 != null ? pct(x1, x0) : ''}</td></tr>` : ''}
         ${piv != null ? `<tr title="実測値に、配分計算の差（整備あり − 整備なし）を足した値"><td>実測＋差</td><td>${stMark('pred')}</td><td>${nr(piv)}</td><td>${fmt(piv / c, 2)}</td><td></td></tr>` : ''}`;
     }
     const src = { edit: '手入力', census: 'センサス', data: '道路データ', guess: '種別・幅員から推定', model: '全国の中央値', near: '近くのセンサス区間', set: '既定値', density: '道路密度から推定' };
@@ -245,11 +251,12 @@ const TrafficUI = (() => {
       return `<div class="tr-cand${k === 0 ? ' on' : ''}"><span class="tr-src ${o.src}${o.est ? ' est' : ''}">${T.SOURCES[o.src].short}${o.est ? '推定' : ''}</span><div><b>${esc(o.name || '')}</b>${c.how === 'spread' ? '（隣の区間の値を準用）' : ''}<span class="muted">${fmtDate(o.date)}　${dn[0]} ${val(sides[0])} ／ ${dn[1]} ${val(sides[1])}</span></div>
         ${k === 0 ? `<span class="muted small">採用中${o.pin ? '（固定）' : ''}</span>` : `<button class="btn xs" data-act="tr-pin" data-id="${o.id}" title="このデータを優先して使う">採用</button>`}${o.pin ? `<button class="btn xs" data-act="tr-unpin" data-id="${o.id}">固定を解除</button>` : ''}</div>`;
     }).join('');
-    return sec(`${esc(e.name || T.KIND_JA[e.kind])}${e.planned ? '（計画道路）' : ''}`, `
+    return sec(`${esc(e.name || T.KIND_JA[e.kind])}${e.planned ? '（計画道路）' : e.abolish ? '（計画で廃止）' : ''}`, `
       <table class="els tr-tbl"><tr><th>${T.PERIODS[period()].short}</th><th></th><th>${unit()}</th><th>混雑度</th><th>増減</th></tr>${rows}</table>
       ${kv([['種別・延長', `${T.KIND_JA[e.kind]}・${fmt(e.len, 0)} m${e.oneway ? '・一方通行' : ''}`], ['交通容量（方向別）', `${nr(cap(okd(0) ? 0 : 1))} ${unit()}<span class="muted">（${src[e.capSrc]}）</span>`],
-      ['自由走行速度', `${fmt(e.v0[0], 0)}${e.v0[0] !== e.v0[1] ? ' / ' + fmt(e.v0[1], 0) : ''} km/h`], r && g ? ['所要時間 整備なし → あり', `${fmt(Math.max(r.before.t[2 * i], r.before.t[2 * i + 1]) * 60, 0)} → ${fmt(Math.max(r.after.t[2 * i], r.after.t[2 * i + 1]) * 60, 0)} 秒`] : null])}
-      ${e.planned ? '' : `<div class="row" style="margin-top:8px"><label class="fld" title="両方向の合計。空欄で自動（${src[e.laneSrc]}: ${e.lanesEff}）"><span class="lb">車線数</span><input data-key="tr.edit.lanes" data-step="1" data-dec="0" value="${ed.lanes || ''}" placeholder="${e.lanesEff}（${src[e.laneSrc]}）" inputmode="decimal"></label>
+      ['自由走行速度', `${fmt(e.v0[0], 0)}${e.v0[0] !== e.v0[1] ? ' / ' + fmt(e.v0[1], 0) : ''} km/h`], r && g && !e.abolish ? ['所要時間 整備なし → あり', `${fmt(Math.max(r.before.t[2 * i], r.before.t[2 * i + 1]) * 60, 0)} → ${fmt(Math.max(r.after.t[2 * i], r.after.t[2 * i + 1]) * 60, 0)} 秒`] : null])}
+      ${e.planned ? '' : `<label class="chk" style="margin-top:8px" title="整備ありのネットワークからこの区間を外します（整備なし・現況では通れるまま）。計画道路の付け替えで廃止・通行止めにする旧道などに使います"><input type="checkbox" data-key="tr.abolish"${e.abolish ? ' checked' : ''}>計画で廃止する（整備ありでは通行できない）</label>
+        <div class="row" style="margin-top:8px"><label class="fld" title="両方向の合計。空欄で自動（${src[e.laneSrc]}: ${e.lanesEff}）"><span class="lb">車線数</span><input data-key="tr.edit.lanes" data-step="1" data-dec="0" value="${ed.lanes || ''}" placeholder="${e.lanesEff}（${src[e.laneSrc]}）" inputmode="decimal"></label>
         <label class="fld" title="沿道状況（地区の属性）。交通容量・換算係数・データの無い区間の交通量の推定に使います"><span class="lb">沿道</span><select data-key="tr.edit.area"><option value="">自動: ${T.AREAS[e.area]}（${src[e.areaSrc]}）</option>${Object.entries(T.AREAS).map(([k, v]) => `<option value="${k}"${+ed.area === +k ? ' selected' : ''}>${v}</option>`).join('')}</select></label></div>
       <div class="lgroup tr-sub"><span>この区間のデータ（精度の高い順）</span></div>${cands || '<div class="muted small">観測データはありません。道路種別・車線数・沿道状況から推定しています。</div>'}
       <div class="row one" style="margin-top:8px"><button class="btn" data-act="tr-measure" title="この区間に観測地点を置き、下の表で方向別の台数を入力します">この区間の実測値を入力</button></div>`}`,
@@ -265,14 +272,15 @@ const TrafficUI = (() => {
       ${row(`総走行台キロ [台km/${pu}]`, nr(b.vkt), nr(a.vkt), pct(a.vkt, b.vkt), null)}
       ${row('混雑度 1.0 以上の延長 [km]', fmt(b.cong / 1000, 2), fmt(a.cong / 1000, 2), `${a.cong <= b.cong ? '−' : '+'}${fmt(Math.abs(a.cong - b.cong) / 1000, 2)}`, a.cong <= b.cong)}
       ${row('混雑度 1.25 以上の延長 [km]', fmt(b.cong2 / 1000, 2), fmt(a.cong2 / 1000, 2), `${a.cong2 <= b.cong2 ? '−' : '+'}${fmt(Math.abs(a.cong2 - b.cong2) / 1000, 2)}`, a.cong2 <= b.cong2)}</table>`;
-    if (!hp) h += `<div class="muted small" style="margin-top:6px">計画道路を描くと、整備あり・なしの比較が出ます。</div>`;
+    if (!hp) h += `<div class="muted small" style="margin-top:6px">計画道路を描くか、既存道路の区間を選んで「計画で廃止する」を指定すると、整備あり・なしの比較が出ます。</div>`;
     else {
       h += `<div class="lgroup tr-sub"><span>計画道路の交通量（両方向）</span></div>` + project.roads.filter((x) => r.plan[x.id]).map((x) => { const p = r.plan[x.id]; return `<div class="tr-plan"><span class="dot" style="background:${PLAN_COLOR}"></span><b>${esc(x.name)}</b><span>${stMark('pred')} 最大 ${nr(p.max)}・平均 ${nr(p.sum / p.len)} ${unit()}　混雑度 ${fmt(p.vc, 2)}</span>
         <label class="fld" title="計画道路の自由走行速度。空欄で自動（沿道状況の中央値と設計速度から）"><span class="lb">旅行速度</span><input data-key="tr.road.${x.id}.tv" data-step="5" data-dec="0" value="${x.tv || ''}" placeholder="自動" inputmode="decimal"><span class="un">km/h</span></label>
         <label class="chk" title="オフにすると、途中で横切る道路とは立体交差（接続なし）として扱います"><input type="checkbox" data-key="tr.road.${x.id}.tcross"${x.tcross !== false ? ' checked' : ''}>途中で横切る道路と平面交差でつなぐ</label></div>`; }).join('');
+      h += abolishList(r);
       /* 緩和・増加の大きい区間（道路名ごとに 1 つ） */
       const net = st.net, list = [];
-      net.edges.forEach((e, i) => { if (e.planned) return; const x0 = r.before.x[2 * i] + r.before.x[2 * i + 1], x1 = r.after.x[2 * i] + r.after.x[2 * i + 1]; list.push({ i, e, x0, x1, d: x1 - x0, c0: Math.max(r.before.x[2 * i] / r.g.cap[2 * i], r.before.x[2 * i + 1] / r.g.cap[2 * i + 1]), c1: Math.max(r.after.x[2 * i] / r.g.cap[2 * i], r.after.x[2 * i + 1] / r.g.cap[2 * i + 1]) }); });
+      net.edges.forEach((e, i) => { if (e.planned || e.abolish) return; const x0 = r.before.x[2 * i] + r.before.x[2 * i + 1], x1 = r.after.x[2 * i] + r.after.x[2 * i + 1]; list.push({ i, e, x0, x1, d: x1 - x0, c0: Math.max(r.before.x[2 * i] / r.g.cap[2 * i], r.before.x[2 * i + 1] / r.g.cap[2 * i + 1]), c1: Math.max(r.after.x[2 * i] / r.g.cap[2 * i], r.after.x[2 * i + 1] / r.g.cap[2 * i + 1]) }); });
       const top = (cmp, n) => { const seen = new Set(), out = []; for (const q of list.slice().sort(cmp)) { const k = q.e.name || q.e.key; if (seen.has(k)) continue; seen.add(k); out.push(q); if (out.length >= n) break; } return out; };
       const item = (q) => `<div class="tr-rank" data-act="tr-goto" data-k="${q.e.key}"><b>${esc(q.e.name || T.KIND_JA[q.e.kind])}</b><span>${nr(q.x0)} → ${nr(q.x1)}</span><span class="${q.d < 0 ? 'dn' : 'up'}">${pct(q.x1, q.x0)}</span><span class="muted">混雑度 ${fmt(q.c0, 2)} → ${fmt(q.c1, 2)}</span></div>`;
       const dec = top((x, y) => x.d - y.d, 6).filter((q) => q.d < -st.vmax * 0.004), incr = top((x, y) => y.d - x.d, 4).filter((q) => q.d > st.vmax * 0.004);
@@ -281,6 +289,16 @@ const TrafficUI = (() => {
     }
     if (r.fit) h += `<div class="lgroup tr-sub"><span>現況の再現性（観測値 と 配分値）</span></div>${scatter(r)}<div class="muted small">${r.fit.realOnly ? '実データ' : '観測・推定データ'} ${r.fit.n} 件（区間・地点の方向別。区間内は延長で平均）。相関係数 ${r.fit.r == null ? '—' : fmt(r.fit.r, 3)}・RMSE ${r.fit.rmse == null ? '—' : fmt(r.fit.rmse * 100, 1) + '%'}。点が斜めの線に近いほど、現況を再現できています。</div>`;
     return sec('予測結果', h, `<span class="muted small">${T.ASSIGN_METHODS[r.assign].name.replace(/（.*/, '')}・ゾーン ${r.zones.length}</span>`);
+  }
+  /* 計画で廃止する道路の一覧（整備なしの交通量 = 整備ありで他の道路へ移る量） */
+  function abolishList(r) {
+    const t = tr(); if (!t.abolish.length) return '';
+    const rows = t.abolish.map((a) => {
+      const p = r.abolished && r.abolished[a.id], k = st.net.edges.find((e) => e.abolish === a.id);
+      return `<div class="tr-plan"><span class="dot" style="background:${ABOL_COLOR}"></span><b${k ? ` class="tr-link" data-act="tr-goto" data-k="${k.key}"` : ''}>${esc(a.name || '既存道路')}</b><span>${p ? `${fmt(p.len, 0)} m　整備なし ${stMark('pred')} 最大 ${nr(p.max)}・平均 ${nr(p.sum / p.len)} ${unit()} → 整備あり 0` : '<span class="muted">道路が見つかりません（既存道路を読み込み直したときなど）</span>'}</span>
+        <button class="btn xs" data-act="tr-unabolish" data-id="${esc(a.id)}" title="廃止の指定を取り消す">取り消す</button></div>`;
+    }).join('');
+    return `<div class="lgroup tr-sub"><span>計画で廃止する道路</span></div>${rows}`;
   }
   function scatter(r) {
     const W = 276, H = 190, pad = { l: 44, r: 8, t: 8, b: 30 }, pts = r.fit.pts, mx = Math.max(1, ...pts.map((p) => Math.max(p.obs, p.mod))) * 1.05;
@@ -558,14 +576,14 @@ const TrafficUI = (() => {
     download(project.name + '_交通量データ.csv', '﻿' + rows.join('\r\n'), 'text/csv');
   }
   function exportResult() {
-    const net = ensureNet(), r = st.res && !st.res.failed ? st.res : null, per = period(), rows = [['路線名', '種別', '計画道路', '延長m', '車線数', '沿道状況', '方向', '緯度', '経度', `交通容量(${unit()})`, '現況', '現況の種別', '現況は換算値', '整備なし(予測)', '整備あり(予測)', '増減', '混雑度_現況', '混雑度_整備なし', '混雑度_整備あり'].join(',')];
+    const net = ensureNet(), r = st.res && !st.res.failed ? st.res : null, per = period(), rows = [['路線名', '種別', '計画道路', '計画で廃止', '延長m', '車線数', '沿道状況', '方向', '緯度', '経度', `交通容量(${unit()})`, '現況', '現況の種別', '現況は換算値', '整備なし(予測)', '整備あり(予測)', '増減', '混雑度_現況', '混雑度_整備なし', '混雑度_整備あり'].join(',')];
     const kindJa = { real: '実データ', est: '推定', attr: '属性から推定' };
     net.edges.forEach((e, i) => {
       const az = azOf(e.pts[e.pts.length - 1][0] - e.pts[0][0], e.pts[e.pts.length - 1][1] - e.pts[0][1]), ll = P.toLL(e.mid[0], e.mid[1]);
       for (let d = 0; d < 2; d++) {
         if (d === 0 ? e.oneway < 0 : e.oneway > 0) continue;
         const cap = r ? r.g.cap[2 * i + d] : (e.cap12 * T.periodScale(per, e.fac)) / (e.oneway ? 1 : 2), b = e.planned ? null : e.base[d], x0 = r && !e.planned ? r.before.x[2 * i + d] : null, x1 = r ? r.after.x[2 * i + d] : null, f = (v) => (v == null ? '' : Math.round(v)), c = (v) => (v == null ? '' : (v / cap).toFixed(2));
-        rows.push([q(e.name), T.KIND_JA[e.kind], e.planned ? '○' : '', e.len.toFixed(0), e.lanesEff, q(T.AREAS[e.area]), compass(az + d * 180), ll.lat.toFixed(6), ll.lng.toFixed(6), f(cap), f(b), b == null ? '' : kindJa[e.bst[d]], e.bconv[d] ? '○' : '', f(x0), f(x1), x0 != null && x1 != null ? f(x1 - x0) : '', c(b), c(x0), c(x1)].join(','));
+        rows.push([q(e.name), T.KIND_JA[e.kind], e.planned ? '○' : '', e.abolish ? '○' : '', e.len.toFixed(0), e.lanesEff, q(T.AREAS[e.area]), compass(az + d * 180), ll.lat.toFixed(6), ll.lng.toFixed(6), f(cap), f(b), b == null ? '' : kindJa[e.bst[d]], e.bconv[d] ? '○' : '', f(x0), f(x1), x0 != null && x1 != null ? f(x1 - x0) : '', c(b), c(x0), c(x1)].join(','));
       }
     });
     download(`${project.name}_交通量予測_${T.PERIODS[per].short}.csv`, '﻿' + rows.join('\r\n'), 'text/csv');
@@ -590,6 +608,12 @@ const TrafficUI = (() => {
       t.edits = Object.assign({}, t.edits); if (Object.keys(ed).length) t.edits[e.key] = ed; else delete t.edits[e.key];
       return commit();
     }
+    if (k === 'abolish') {
+      const net = ensureNet(), e = st.sel != null && net.byKey.has(st.sel) ? net.edges[net.byKey.get(st.sel)] : null; if (!e || e.planned) return;
+      if (raw && !e.abolish) t.abolish = t.abolish.concat([{ id: 'ab' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: e.name || T.KIND_JA[e.kind], ll: e.ll.map((p) => [+p.lat.toFixed(7), +p.lng.toFixed(7)]) }]);
+      else if (!raw && e.abolish) t.abolish = t.abolish.filter((a) => a.id !== e.abolish);
+      return commit();
+    }
     if (k.startsWith('road.')) { const [, id, f] = k.split('.'), r = roadById(id); if (!r) return; if (f === 'tv') { if (v > 0) r.tv = Math.min(120, v); else delete r.tv; } else r.tcross = !!raw; return commit(); }
     const numeric = { growth: [0.1, 5], internal: [0, 10], alpha: [0, 5], beta: [1, 10], splits: [2, 20], theta: [0.01, 10], gamma: [0, 5], kappa: [1, 20] };
     t.set = Object.assign({}, t.set);
@@ -610,6 +634,7 @@ const TrafficUI = (() => {
       case 'tr-goto': { const net = ensureNet(), i = net.byKey.get(el.dataset.k); if (i != null) { st.sel = el.dataset.k; map.fitBounds(L.latLngBounds(net.edges[i].ll).pad(1.5), { maxZoom: 17 }); render(); renderPanels(); } return true; }
       case 'tr-goto-obs': { const o = obsById(id); if (!o) return true; st.focus = id; const info = st.net && st.net.obsInfo.get(id); if (info && info.edgeKey) st.sel = info.edgeKey; if (o.pt) map.setView(o.pt, Math.max(map.getZoom(), 16)); else if (o.lines) map.fitBounds(L.latLngBounds(o.lines.flatMap((l) => { const p = []; for (let i = 0; i < l.length; i += 2) p.push([l[i], l[i + 1]]); return p; })).pad(0.5), { maxZoom: 17 }); st.drawSig = ''; render(); renderPanels(); return true; }
       case 'tr-pin': tr().obs = tr().obs.map((o) => { const e = st.net.edges[st.net.byKey.get(st.sel)]; return o.id === id ? Object.assign({}, o, { pin: true }) : e && e.cands.some((c) => c.o.id === o.id) && o.pin ? Object.assign({}, o, { pin: false }) : o; }); commit(); return true;
+      case 'tr-unabolish': tr().abolish = tr().abolish.filter((a) => a.id !== id); commit(); return true;
       case 'tr-unpin': setObs(id, { pin: false }); commit(); return true;
       case 'tr-measure': { const net = ensureNet(), i = net.byKey.get(st.sel); if (i != null) { const e = net.edges[i], ll = st.at && T.nearestOnEdge(e, P.toXY(st.at).x, P.toXY(st.at).y).d < 30 ? st.at : P.toLL(e.mid[0], e.mid[1]); addObsAt(ll, i); } return true; }
       case 'tr-add': setTool(ui.tool === 'tobs' ? 'select' : 'tobs'); return true;
@@ -642,7 +667,7 @@ const TrafficUI = (() => {
   function report(tbl) {
     const r = st.res && !st.res.failed && !stale() ? st.res : null; if (!r || !r.hasPlan) return '';
     const b = r.sum.before, a = r.sum.after, u = unit(), pu = u.replace('台/', ''), net = st.net, list = [];
-    net.edges.forEach((e, i) => { if (e.planned) return; const x0 = r.before.x[2 * i] + r.before.x[2 * i + 1], x1 = r.after.x[2 * i] + r.after.x[2 * i + 1]; list.push({ e, x0, x1, c0: Math.max(r.before.x[2 * i] / r.g.cap[2 * i], r.before.x[2 * i + 1] / r.g.cap[2 * i + 1]), c1: Math.max(r.after.x[2 * i] / r.g.cap[2 * i], r.after.x[2 * i + 1] / r.g.cap[2 * i + 1]) }); });
+    net.edges.forEach((e, i) => { if (e.planned || e.abolish) return; const x0 = r.before.x[2 * i] + r.before.x[2 * i + 1], x1 = r.after.x[2 * i] + r.after.x[2 * i + 1]; list.push({ e, x0, x1, c0: Math.max(r.before.x[2 * i] / r.g.cap[2 * i], r.before.x[2 * i + 1] / r.g.cap[2 * i + 1]), c1: Math.max(r.after.x[2 * i] / r.g.cap[2 * i], r.after.x[2 * i + 1] / r.g.cap[2 * i + 1]) }); });
     const seen = new Set(), top = list.sort((x, y) => x.x1 - x.x0 - (y.x1 - y.x0)).filter((q) => { const k = q.e.name || q.e.key; if (seen.has(k) || q.x1 >= q.x0) return false; seen.add(k); return true; }).slice(0, 12);
     const kind = (e) => ({ real: '実データ', est: '推定', attr: '属性から推定' }[e.bst.includes('attr') ? 'attr' : e.bst.includes('est') ? 'est' : 'real']);
     const cnt = {}; tr().obs.forEach((o) => { if (!o.off) { const k = T.SOURCES[o.src].short + (o.est ? '（推定値）' : ''); cnt[k] = (cnt[k] || 0) + 1; } });
@@ -652,6 +677,8 @@ const TrafficUI = (() => {
       ${tbl(['指標', '整備なし', '整備あり', '増減'], [[`総走行時間 [台時/${pu}]`, nr(b.vht), nr(a.vht), pct(a.vht, b.vht)], [`損失時間 [台時/${pu}]`, nr(b.lost), nr(a.lost), pct(a.lost, b.lost)], ['平均旅行速度 [km/h]', fmt(b.speed, 1), fmt(a.speed, 1), pct(a.speed, b.speed)], [`総走行台キロ [台km/${pu}]`, nr(b.vkt), nr(a.vkt), pct(a.vkt, b.vkt)], ['混雑度 1.0 以上の延長 [km]', fmt(b.cong / 1000, 2), fmt(a.cong / 1000, 2), ''], ['混雑度 1.25 以上の延長 [km]', fmt(b.cong2 / 1000, 2), fmt(a.cong2 / 1000, 2), '']])}
       <h2>計画道路の交通量（予測値・両方向）</h2>
       ${tbl(['計画道路', `最大 [${u}]`, `平均 [${u}]`, '混雑度（最大）'], project.roads.filter((x) => r.plan[x.id]).map((x) => { const p = r.plan[x.id]; return [esc(x.name), nr(p.max), nr(p.sum / p.len), fmt(p.vc, 2)]; }))}
+      ${tr().abolish.length ? `<h2>計画で廃止する道路（整備なしの予測値・両方向）</h2>
+      ${tbl(['道路', '延長 [m]', `最大 [${u}]`, `平均 [${u}]`], tr().abolish.map((x) => { const p = r.abolished && r.abolished[x.id]; return [esc(x.name || '既存道路'), p ? fmt(p.len, 0) : '—', p ? nr(p.max) : '—', p ? nr(p.sum / p.len) : '—']; }))}` : ''}
       <h2>交通量が減る主な区間（両方向）</h2>
       ${tbl(['路線', '種別', `現況 [${u}]`, '現況の種別', '整備なし（予測）', '整備あり（予測）', '増減', '混雑度 なし → あり'], top.map((q) => [esc(q.e.name || '—'), T.KIND_JA[q.e.kind], nr(q.e.base[0] + q.e.base[1]), kind(q.e), nr(q.x0), nr(q.x1), pct(q.x1, q.x0), `${fmt(q.c0, 2)} → ${fmt(q.c1, 2)}`]))}
       <p class="sm">現況は観測データ（実データ）または推定値、整備なし・整備ありは配分計算による予測値です。読み込んだ範囲の道路だけで作る簡易な需要予測（需要固定）で、交通容量・換算係数は令和3年度 全国道路・街路交通情勢調査（国土交通省）の全国集計を加工した値を使っています。</p></div>`;

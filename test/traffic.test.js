@@ -155,3 +155,33 @@ test('上下線が別々の線（一方通行の情報なし）: 区間の値を
   const r = T.run(net, { internal: 0 });
   assert.ok(!r.failed); assert.ok(r.fit.rmse < 0.1, `断面の合計で再現 ${r.fit.rmse}`);
 });
+
+test('計画で廃止する既存道路: 整備ありだけ通れなくなり、計画道路の接続でリンクが分かれても指定が引き継がれる', () => {
+  const ab = [{ id: 'x1', xy: [{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 2000, y: 0 }] }]; // 幹線 main 全体
+  for (const assign of Object.keys(T.ASSIGN_METHODS)) {
+    const net = bypassCase(true); T.prepare(net, [], { area: 2, abolish: ab });
+    const mainI = net.edges.map((e, i) => (e.rid === 'main' ? i : -1)).filter((i) => i >= 0);
+    assert.ok(mainI.length >= 2 && mainI.every((i) => net.edges[i].abolish === 'x1'), '分かれた幹線の各リンクに印');
+    assert.ok(net.edges.every((e) => e.rid === 'main' || !e.abolish), '他の道路には付かない');
+    const r = T.run(net, { assign, internal: 0 }), two = (c, i) => c.x[2 * i] + c.x[2 * i + 1];
+    assert.ok(!r.failed && r.hasPlan, assign);
+    assert.ok(mainI.some((i) => two(r.before, i) > 100), `${assign}: 整備なしでは幹線を通る`);
+    mainI.forEach((i) => assert.strictEqual(two(r.after, i), 0, `${assign}: 整備ありでは幹線は 0`));
+    assert.ok(r.plan.bp.max > 1000, `${assign}: 計画道路へ移る`);
+    near(r.abolished.x1.len, 2000, 1, '廃止延長');
+  }
+});
+
+test('廃止だけの計画（計画道路なし）も比べられ、代わりの道が無いと行き来できない交通を警告する', () => {
+  const ab = [{ id: 's', xy: [{ x: 0, y: 0 }, { x: 2000, y: 0 }] }];
+  const net = twoRoutes(); T.prepare(net, [], { area: 3, abolish: ab });
+  const r = T.run(net, { internal: 0, od: 'gravity' }), si = net.edges.findIndex((e) => e.rid === 'short'), li = net.edges.findIndex((e) => e.rid === 'long');
+  assert.strictEqual(r.hasPlan, true); assert.notStrictEqual(r.after, r.before);
+  assert.strictEqual(r.after.x[2 * si] + r.after.x[2 * si + 1], 0);
+  assert.ok(r.after.x[2 * li] + r.after.x[2 * li + 1] > r.before.x[2 * li] + r.before.x[2 * li + 1], '迂回路が増える');
+  assert.ok(!(r.cut > 0)); assert.ok(r.sum.after.vht > r.sum.before.vht, '総走行時間が増える');
+  /* 出入口につながる唯一の道路を廃止すると、その出入口との交通は整備ありで行き場が無い */
+  const net2 = twoRoutes(); T.prepare(net2, [], { area: 3, abolish: [{ id: 'i', xy: [{ x: -500, y: 0 }, { x: 0, y: 0 }] }] });
+  const r2 = T.run(net2, { internal: 0, od: 'gravity' });
+  assert.ok(r2.cut > 0 && r2.warn.some((w) => /行き来できなくなる/.test(w)));
+});

@@ -5,7 +5,8 @@
  *  2. prepare       観測データ（実測・常時観測・センサス・取り込み）を精度の高い順にリンクへ割り当て、
  *                   データの無いリンクは道路種別・車線数・沿道状況（地区の属性）から交通量を推定する
  *  3. run           域外との出入口（コードン）の方向別交通量を発生・集中交通量として OD 表を推定し、
- *                   計画道路なし／ありのネットワークに配分して前後を比較する
+ *                   計画道路なし／ありのネットワークに配分して前後を比較する。
+ *                   計画で廃止する既存道路（opt.abolish）は「整備あり」のネットワークからだけ外す
  *
  * 交通量の単位は選んだ時間帯あたりの台数（方向別）、時間は分、長さは m。 */
 (function (root) {
@@ -269,7 +270,8 @@
   /* ───────── 観測データの割り当てと現況交通量 ─────────
    * obs: [{ id, src, est, date, off, pin, p:{x,y}（地点）| ls:[[{x,y}]]（区間。向きは a 方向）, av:{x,y}（a 方向の単位ベクトル）, ud（a=下り,b=上り）,
    *         a:{...}, b:{...}, both:{...}, meta:{type,lanes,area,dn,pk,konz,spd:[朝夕b,朝夕a,昼間b,昼間a],oriented} }]
-   * 各リンクに e.cands（候補。優先順）, e.ob（採用した候補）, e.area, e.lanesEff, e.cap12, e.v0[2] を付ける */
+   * 各リンクに e.cands（候補。優先順）, e.ob（採用した候補）, e.area, e.lanesEff, e.cap12, e.v0[2] を付ける
+   * opt.abolish: [{ id, xy:[{x,y}] }] 計画で廃止する既存道路の線。重なるリンクに e.abolish（その id）を付ける */
   const rankOf = (c) => (c.o.pin ? 1000 : 0) + (c.o.est ? EST_RANK : (SOURCES[c.o.src] || SOURCES.local).rank) - (c.how === 'spread' ? SPREAD_PENALTY : 0);
   const dateNum = (d) => +String(d || '').replace(/\D/g, '').slice(0, 8).padEnd(8, '0') || 0;
   function prepare(net, obsList, opt = {}) {
@@ -346,7 +348,33 @@
       e.share = 1 / (1 + e.twins.length);
     });
     attributes(net, opt);
+    markAbolish(net, opt.abolish);
     return net;
+  }
+  /* 計画で廃止する既存道路: 指定した線（選んだときのリンクの形）にほぼ重なるリンクに印を付ける。
+   * 計画道路の接続でリンクが分かれても、分かれた各リンクが同じ線の上にあるので印が引き継がれる。
+   * リンクの 10〜90% の 5 点のうち 3 点以上が線から 3m 以内をほぼ平行に通れば廃止とみなす */
+  function markAbolish(net, list) {
+    net.edges.forEach((e) => { e.abolish = null; });
+    if (!list || !list.length) return;
+    const grid = segGrid(50), segs = [];
+    list.forEach((l) => { const p = l.xy || []; for (let i = 1; i < p.length; i++) { grid.add(p[i - 1].x, p[i - 1].y, p[i].x, p[i].y, segs.length); segs.push([l.id, p[i - 1].x, p[i - 1].y, p[i].x, p[i].y]); } });
+    if (!segs.length) return;
+    const TOL = 3;
+    net.edges.forEach((e) => {
+      if (e.planned) return;
+      const hits = new Map();
+      for (const f of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+        const q = pointAt(e, e.len * f), got = new Set();
+        grid.near(q.x, q.y, TOL, (si) => {
+          const s = segs[si]; if (got.has(s[0])) return;
+          const pr = projSeg(q.x, q.y, s[1], s[2], s[3], s[4]); if (pr.d > TOL) return;
+          const l = hyp(s[3] - s[1], s[4] - s[2]) || 1; if (Math.abs(((s[3] - s[1]) * q.dx + (s[4] - s[2]) * q.dy) / l) < 0.9 && l > 1) return;
+          got.add(s[0]); hits.set(s[0], (hits.get(s[0]) || 0) + 1);
+        });
+      }
+      for (const [id, n] of hits) if (n >= 3) { e.abolish = id; break; }
+    });
   }
   /* 地点データを同じ道路の隣のリンクへ準用: 直進方向へ、同格以上の道路との交差点に出るまで（最長 1.5km） */
   function spread(net, e0, sign0, o) {
@@ -469,12 +497,12 @@
   /* ───────── 配分計算 ───────── */
   function graphOf(net, period) {
     const E = net.edges, nN = net.nodes.length, nA = E.length * 2;
-    const g = { nN, nA, tail: new Int32Array(nA), head: new Int32Array(nA), t0: new Float64Array(nA), cap: new Float64Array(nA), len: new Float64Array(nA), ok: new Uint8Array(nA), planned: new Uint8Array(nA), on: new Uint8Array(nA) };
+    const g = { nN, nA, tail: new Int32Array(nA), head: new Int32Array(nA), t0: new Float64Array(nA), cap: new Float64Array(nA), len: new Float64Array(nA), ok: new Uint8Array(nA), planned: new Uint8Array(nA), abol: new Uint8Array(nA), on: new Uint8Array(nA) };
     E.forEach((e, i) => {
       const sc = periodScale(period, e.fac || factors(e.group, e.area)), cap = Math.max(1, (e.cap12 * sc) / (e.oneway ? 1 : 2));
       for (let d = 0; d < 2; d++) {
         const a = 2 * i + d; g.tail[a] = d ? e.b : e.a; g.head[a] = d ? e.a : e.b; g.len[a] = e.len; g.cap[a] = cap;
-        g.t0[a] = (e.len / 1000 / e.v0[d]) * 60 + (e.delay || 0) / 60; g.planned[a] = e.planned ? 1 : 0;
+        g.t0[a] = (e.len / 1000 / e.v0[d]) * 60 + (e.delay || 0) / 60; g.planned[a] = e.planned ? 1 : 0; g.abol[a] = e.abolish ? 1 : 0;
         g.ok[a] = !e.closed && (d ? e.oneway <= 0 : e.oneway >= 0) ? 1 : 0;
       }
     });
@@ -483,7 +511,8 @@
     g.dist = new Float64Array(nN); g.pred = new Int32Array(nN); g.order = new Int32Array(nN); g.hn = new Int32Array(nA + nN + 8); g.hd = new Float64Array(nA + nN + 8); g.load = new Float64Array(nN);
     return g;
   }
-  const setCase = (g, withPlanned) => { for (let a = 0; a < g.nA; a++) g.on[a] = g.ok[a] && (withPlanned || !g.planned[a]) ? 1 : 0; };
+  /* 配分に使うリンク: withPlanned = 計画道路を入れる、abolish = 計画で廃止する既存道路を外す（省略時は withPlanned と同じ＝整備あり） */
+  const setCase = (g, withPlanned, abolish = withPlanned) => { for (let a = 0; a < g.nA; a++) g.on[a] = g.ok[a] && (withPlanned || !g.planned[a]) && !(abolish && g.abol[a]) ? 1 : 0; };
   /* 最短経路（Dijkstra）。g.dist, g.pred（その節点に入る arc）, g.order（確定順）を埋め、確定した節点数を返す */
   function sssp(g, src, cost) {
     const { dist, pred, order, hn, hd, outS, outA, head, on } = g;
@@ -631,7 +660,7 @@
     baseVolumes(net, period);
     const g = graphOf(net, period), zones = buildZones(net, period, P), Z = zones.length, zn = zones.map((z) => z.node);
     const res = { period, od: P.od, assign: P.assign, params: P, zones, warn, nEdges: E.length, nNodes: net.nodes.length };
-    const hasPlan = E.some((e) => e.planned);
+    const hasAbol = E.some((e) => e.abolish), hasPlan = E.some((e) => e.planned) || hasAbol; // 計画道路が無くても、廃止だけの計画を比べられる
     if (Z < 2) { warn.push('域外との出入口（行き止まりの幹線）が 2 か所以上必要です。既存道路をもう少し広い範囲で読み込んでください'); return Object.assign(res, { failed: true }); }
     /* 発生・集中の総量を合わせる */
     const O = zones.map((z) => z.O), D = zones.map((z) => z.D), so = O.reduce((a, b) => a + b, 0), sd = D.reduce((a, b) => a + b, 0);
@@ -687,12 +716,13 @@
       const pre = assign(g, od, zn, 'inc', P), tA = pre.t, x0 = aon(g, od, zn, tA, new Float64Array(g.nA)), x1 = new Float64Array(g.nA);
       const predA = new Int32Array(g.nN), distA = new Float64Array(g.nN); let diverted = 0;
       for (let i = 0; i < Z; i++) {
-        setCase(g, false); sssp(g, zn[i], tA); predA.set(g.pred); distA.set(g.dist);
+        setCase(g, false, true); sssp(g, zn[i], tA); predA.set(g.pred); distA.set(g.dist); // 計画道路を使わない経路（廃止する道路は通れない）
         setCase(g, true); sssp(g, zn[i], tA);
         for (let j = 0; j < Z; j++) {
-          const d = od[i * Z + j]; if (!(d > 0) || !isFinite(distA[zn[j]])) continue;
-          const ta = distA[zn[j]], tb = g.dist[zn[j]], p = hasPlan && tb < ta - 1e-9 ? 1 / (1 + Math.pow(tb / ta, P.kappa)) : 0;
-          let n = zn[j], a; while ((a = predA[n]) >= 0) { x1[a] += d * (1 - p); n = g.tail[a]; }
+          const d = od[i * Z + j]; if (!(d > 0)) continue;
+          const ta = distA[zn[j]], tb = g.dist[zn[j]]; if (!isFinite(ta) && !isFinite(tb)) continue;
+          const p = !isFinite(ta) ? 1 : hasPlan && tb < ta - 1e-9 ? 1 / (1 + Math.pow(tb / ta, P.kappa)) : 0;
+          let n = zn[j], a; if (p < 1) while ((a = predA[n]) >= 0) { x1[a] += d * (1 - p); n = g.tail[a]; }
           if (p > 0) { n = zn[j]; while ((a = g.pred[n]) >= 0) { x1[a] += d * p; n = g.tail[a]; } diverted += d * p; }
         }
       }
@@ -716,17 +746,26 @@
       E.forEach((e, i) => {
         let mx = 0;
         for (let d = 0; d < 2; d++) { const a = 2 * i + d, x = c.x[a]; if (!g.ok[a]) continue; vkt += (x * e.len) / 1000; vht += (x * c.t[a]) / 60; lost += (x * (c.t[a] - g.t0[a])) / 60; mx = Math.max(mx, x / g.cap[a]); }
-        if (c === before && e.planned) return;
+        if ((c === before && e.planned) || (c !== before && e.abolish)) return;
         len += e.len; if (mx >= 1) cong += e.len; if (mx >= 1.25) cong2 += e.len;
       });
       return { vkt, vht, lost, speed: vht > 0 ? vkt / vht : 0, cong, cong2, len };
     };
     res.before = before; res.after = after; res.g = g; res.trips = od.reduce((a, b) => a + b, 0);
+    /* 廃止で行き来できなくなる OD（整備ありで経路が無く、配分されない交通） */
+    if (hasAbol) {
+      let lost = 0; setCase(g, true);
+      for (let i = 0; i < Z; i++) { sssp(g, zn[i], g.t0); for (let j = 0; j < Z; j++) if (i !== j && od[i * Z + j] > 0 && isFinite(C0[i * Z + j]) && !isFinite(g.dist[zn[j]])) lost += od[i * Z + j]; }
+      res.cut = lost;
+      if (lost > res.trips * 0.001) warn.push(`廃止する道路のため、整備ありでは行き来できなくなる交通が ${Math.round(lost).toLocaleString('ja-JP')} 台（全体の ${((lost / res.trips) * 100).toFixed(1)}%）あり、整備ありの配分から外れています。廃止区間の代わりになる道路がつながっているかを確認してください`);
+    }
     res.sum = { before: tally(before), after: tally(after) };
     res.hasPlan = hasPlan;
+    res.abolished = {}; // 廃止する道路ごと: 延長と、整備なしの交通量（両方向の合計: 区間最大・延長加重平均）
+    E.forEach((e, i) => { if (!e.abolish) return; const v = before.x[2 * i] + before.x[2 * i + 1], p = res.abolished[e.abolish] || (res.abolished[e.abolish] = { max: 0, sum: 0, len: 0 }); p.max = Math.max(p.max, v); p.sum += v * e.len; p.len += e.len; });
     res.plan = {}; // 計画道路ごとの交通量（両方向の合計: 区間最大・延長加重平均）
     E.forEach((e, i) => { if (!e.planned) return; const v = after.x[2 * i] + after.x[2 * i + 1], p = res.plan[e.rid] || (res.plan[e.rid] = { max: 0, sum: 0, len: 0, vc: 0 }); p.max = Math.max(p.max, v); p.sum += v * e.len; p.len += e.len; p.vc = Math.max(p.vc, after.x[2 * i] / g.cap[2 * i], after.x[2 * i + 1] / g.cap[2 * i + 1]); });
-    if (hasPlan && !Object.values(res.plan).some((p) => p.max > 0)) warn.push('計画道路に交通が乗りませんでした。端点が既存道路に接続されているか、既存の経路より所要時間が短くなるかを確認してください');
+    if (E.some((e) => e.planned) && !Object.values(res.plan).some((p) => p.max > 0)) warn.push('計画道路に交通が乗りませんでした。端点が既存道路に接続されているか、既存の経路より所要時間が短くなるかを確認してください');
     if (P.od === 'entropy' && !obsArc.length) warn.push('観測データが無いため、OD 表は属性からの推定値だけで作っています');
     return res;
   }

@@ -308,6 +308,8 @@ body.traffic-on .leaflet-exband-pane { opacity: 0.12 !important; } body.traffic-
 .tr-legend.ln { padding-top: 6px; border-top: 1px solid var(--line); margin-top: 6px; }
 .tr-legend .l-real { background: #52514e; } .tr-legend .l-est { background: repeating-linear-gradient(90deg, #52514e 0 5px, transparent 5px 8px); }
 .tr-legend .l-pred { background: radial-gradient(circle, #fff 1px, transparent 1.4px) 0 50% / 5px 5px repeat-x, #52514e; }
+.tr-legend .l-abol { background: repeating-linear-gradient(90deg, #55534d 0 3px, transparent 3px 7px); }
+.tr-plan .tr-link { cursor: pointer; text-decoration: underline dotted; }
 .tr-st { display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 2px; border-radius: 3px; font: 600 9.5px/1 Inter, system-ui, sans-serif; font-style: normal; vertical-align: 1px; }
 .tr-st.real { background: #1e1e1e; color: #fff; } .tr-st.est, .tr-st.attr { border: 1px dashed #757575; color: #52514e; } .tr-st.pred { border: 1px solid #6250d6; color: #4a3aa7; background: #f1effc; }
 .tr-src { display: inline-block; border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: 600; white-space: nowrap; background: #1e1e1e; color: #fff; }
